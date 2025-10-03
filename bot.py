@@ -3,6 +3,8 @@ from discord.ext import commands
 import sqlite3
 import datetime
 import re
+from dotenv import load_dotenv
+load_dotenv()
 import os
 
 # Bot setup
