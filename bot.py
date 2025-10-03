@@ -88,13 +88,16 @@ from tracks_config import MK8_TRACKS, GAME_MODES
 
 # Autocomplete functions
 async def track_autocomplete(interaction: discord.Interaction, current: str):
-    return [track for track in MK8_TRACKS if current.lower() in track.lower()][:25]
+    from discord import app_commands
+    return [app_commands.Choice(name=track, value=track) for track in MK8_TRACKS if current.lower() in track.lower()][:25]
 
 async def mode_autocomplete(interaction: discord.Interaction, current: str):
-    return [mode for mode in GAME_MODES if current.lower() in mode.lower()][:25]
+    from discord import app_commands
+    return [app_commands.Choice(name=mode, value=mode) for mode in GAME_MODES if current.lower() in mode.lower()][:25]
 
 async def items_autocomplete(interaction: discord.Interaction, current: str):
-    return [item for item in ["shrooms", "no_items"] if current.lower() in item.lower()]
+    from discord import app_commands
+    return [app_commands.Choice(name=item, value=item) for item in ["shrooms", "no_items"] if current.lower() in item.lower()]
 from world_records_itemless import WORLD_RECORDS_ITEMLESS
 from world_records_shrooms import WORLD_RECORDS_SHROOMS
 
