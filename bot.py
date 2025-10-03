@@ -85,6 +85,16 @@ def truncate_text(text, max_length=100):
     return text[:max_length-3] + "..."
 
 from tracks_config import MK8_TRACKS, GAME_MODES
+
+# Autocomplete functions
+async def track_autocomplete(interaction: discord.Interaction, current: str):
+    return [track for track in MK8_TRACKS if current.lower() in track.lower()][:25]
+
+async def mode_autocomplete(interaction: discord.Interaction, current: str):
+    return [mode for mode in GAME_MODES if current.lower() in mode.lower()][:25]
+
+async def items_autocomplete(interaction: discord.Interaction, current: str):
+    return [item for item in ["shrooms", "no_items"] if current.lower() in item.lower()]
 from world_records_itemless import WORLD_RECORDS_ITEMLESS
 from world_records_shrooms import WORLD_RECORDS_SHROOMS
 
@@ -162,6 +172,11 @@ async def compare_wr_itemless(interaction: discord.Interaction):
     embed.set_footer(text="World records: Shroomless/Itemless only. Times shown are your PBs for each track.")
     await interaction.response.send_message(embed=embed)
 @bot.tree.command(name="add_time", description="Add a new time trial record")
+@discord.app_commands.autocomplete(
+    track=track_autocomplete,
+    mode=mode_autocomplete,
+    items=items_autocomplete
+)
 async def add_time(
     interaction: discord.Interaction, 
     track: str, 
@@ -250,6 +265,11 @@ async def add_time(
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="view_times", description="View your times for a specific track and mode/items")
+@discord.app_commands.autocomplete(
+    track=track_autocomplete,
+    mode=mode_autocomplete,
+    items=items_autocomplete
+)
 async def view_times(interaction: discord.Interaction, track: str, mode: str = "150cc", items: str = "shrooms"):
     # Validate track
     if track not in MK8_TRACKS:
@@ -303,6 +323,11 @@ async def view_times(interaction: discord.Interaction, track: str, mode: str = "
 
 
 @bot.tree.command(name="personal_best", description="View your personal best for a specific track and mode/items")
+@discord.app_commands.autocomplete(
+    track=track_autocomplete,
+    mode=mode_autocomplete,
+    items=items_autocomplete
+)
 async def personal_best(interaction: discord.Interaction, track: str, mode: str = "150cc", items: str = "shrooms"):
     # Validate track
     if track not in MK8_TRACKS:
@@ -357,6 +382,11 @@ async def personal_best(interaction: discord.Interaction, track: str, mode: str 
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="delete_time", description="Delete one of your recorded times for a track/mode/items")
+@discord.app_commands.autocomplete(
+    track=track_autocomplete,
+    mode=mode_autocomplete,
+    items=items_autocomplete
+)
 async def delete_time(
     interaction: discord.Interaction,
     track: str,
@@ -429,6 +459,7 @@ async def delete_time(
 
 
 @bot.tree.command(name="clear_track", description="Clear all your times for a specific track")
+@discord.app_commands.autocomplete(track=track_autocomplete)
 async def clear_track(interaction: discord.Interaction, track: str):
     if track not in MK8_TRACKS:
         await interaction.response.send_message(f"❌ Invalid track name. Use `/list_tracks` to see all available tracks.", ephemeral=True)
