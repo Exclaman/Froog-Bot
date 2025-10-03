@@ -651,7 +651,7 @@ async def compare_wr_shrooms(interaction: discord.Interaction, cc: str = "150cc"
 
 # Run the bot
 if __name__ == "__main__":
-    token = os.getenv('FROOG')
+    token = os.getenv('DISCORD_BOT_TOKEN')
     if not token:
         print("❌ DISCORD_BOT_TOKEN environment variable not found!")
         print("Please set your Discord bot token as an environment variable.")
