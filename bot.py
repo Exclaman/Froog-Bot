@@ -83,6 +83,7 @@ def truncate_text(text, max_length=100):
     return text[:max_length-3] + "..."
 
 from tracks_config import MK8_TRACKS, GAME_MODES
+from world_records import WORLD_RECORDS
 
 @bot.event
 async def on_ready():
@@ -94,6 +95,71 @@ async def on_ready():
     except Exception as e:
         print(f"Failed to sync commands: {e}")
 
+@bot.tree.command(name="compare_wr_itemless", description="Compare your shroomless times to world records and group by proximity")
+async def compare_wr_itemless(interaction: discord.Interaction):
+    items = "no_items"  # Shroomless/Itemless only
+    mode = "150cc"      # Default mode for WRs (adjust if needed)
+
+    conn = sqlite3.connect('mario_kart_times.db')
+    cursor = conn.cursor()
+
+    # Get all user's times for shroomless 150cc
+    cursor.execute('''
+        SELECT track_name, time_minutes, time_seconds, time_milliseconds
+        FROM time_trials
+        WHERE user_id = ? AND game_mode = ? AND items_setting = ?
+    ''', (interaction.user.id, mode, items))
+    user_times = cursor.fetchall()
+    conn.close()
+
+    # Prepare grouping buckets
+    buckets = {
+        "Within 1s": [],
+        "Within 2s": [],
+        "Within 3s": [],
+        "Within 5s": [],
+        "Within 7s": [],
+        "7s+": []
+    }
+
+    for track_name, mins, secs, ms in user_times:
+        # Find WR for this track
+        wr_entry = next((v for k, v in WORLD_RECORDS.items() if v[0] == track_name), None)
+        if not wr_entry:
+            continue
+        wr_time_str = wr_entry[1]
+        wr_parsed = parse_time(wr_time_str)
+        if not wr_parsed:
+            continue
+        user_ms = time_to_total_ms(mins, secs, ms)
+        wr_ms = time_to_total_ms(*wr_parsed)
+        diff = user_ms - wr_ms
+        diff_s = diff / 1000.0
+        formatted_user = format_time(mins, secs, ms)
+        formatted_wr = format_time(*wr_parsed)
+        entry = f"{track_name}: {formatted_user} (WR: {formatted_wr}, +{diff_s:.3f}s)"
+        if diff_s <= 1:
+            buckets["Within 1s"].append(entry)
+        elif diff_s <= 2:
+            buckets["Within 2s"].append(entry)
+        elif diff_s <= 3:
+            buckets["Within 3s"].append(entry)
+        elif diff_s <= 5:
+            buckets["Within 5s"].append(entry)
+        elif diff_s <= 7:
+            buckets["Within 7s"].append(entry)
+        else:
+            buckets["7s+"].append(entry)
+
+    embed = discord.Embed(title="⏱️ Your Shroomless Times vs World Records", color=0x1abc9c)
+    for group, entries in buckets.items():
+        if entries:
+            embed.add_field(name=group, value="\n".join(entries), inline=False)
+        else:
+            embed.add_field(name=group, value="None", inline=False)
+
+    embed.set_footer(text="World records: Shroomless/Itemless only. Times shown are your PBs for each track.")
+    await interaction.response.send_message(embed=embed)
 @bot.tree.command(name="add_time", description="Add a new time trial record")
 async def add_time(
     interaction: discord.Interaction, 
