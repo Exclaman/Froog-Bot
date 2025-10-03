@@ -83,7 +83,8 @@ def truncate_text(text, max_length=100):
     return text[:max_length-3] + "..."
 
 from tracks_config import MK8_TRACKS, GAME_MODES
-from world_records import WORLD_RECORDS
+from world_records_itemless import WORLD_RECORDS_ITEMLESS
+from world_records_shrooms import WORLD_RECORDS_SHROOMS
 
 @bot.event
 async def on_ready():
@@ -123,11 +124,9 @@ async def compare_wr_itemless(interaction: discord.Interaction):
     }
 
     for track_name, mins, secs, ms in user_times:
-        # Find WR for this track
-        wr_entry = next((v for k, v in WORLD_RECORDS.items() if v[0] == track_name), None)
-        if not wr_entry:
+        wr_time_str = WORLD_RECORDS_ITEMLESS.get(track_name)
+        if not wr_time_str:
             continue
-        wr_time_str = wr_entry[1]
         wr_parsed = parse_time(wr_time_str)
         if not wr_parsed:
             continue
@@ -579,6 +578,74 @@ async def stats(interaction: discord.Interaction, mode: str = "150cc", items: st
     
     await interaction.response.send_message(embed=embed)
 
+
+@bot.tree.command(name="compare_wr_shrooms", description="Compare your shrooms times to world records and group by proximity (150cc/200cc)")
+async def compare_wr_shrooms(interaction: discord.Interaction, cc: str = "150cc"):
+    if cc not in WORLD_RECORDS_SHROOMS:
+        await interaction.response.send_message(f"❌ Invalid CC. Choose '150cc' or '200cc'", ephemeral=True)
+        return
+
+    items = "shrooms"
+    mode = cc
+
+    conn = sqlite3.connect('mario_kart_times.db')
+    cursor = conn.cursor()
+
+    # Get all user's times for shrooms and selected cc
+    cursor.execute('''
+        SELECT track_name, time_minutes, time_seconds, time_milliseconds
+        FROM time_trials
+        WHERE user_id = ? AND game_mode = ? AND items_setting = ?
+    ''', (interaction.user.id, mode, items))
+    user_times = cursor.fetchall()
+    conn.close()
+
+    buckets = {
+        "Within 1s": [],
+        "Within 2s": [],
+        "Within 3s": [],
+        "Within 5s": [],
+        "Within 7s": [],
+        "7s+": []
+    }
+
+    wr_dict = WORLD_RECORDS_SHROOMS[cc]
+    for track_name, mins, secs, ms in user_times:
+        wr_time_str = wr_dict.get(track_name)
+        if not wr_time_str:
+            continue
+        wr_parsed = parse_time(wr_time_str)
+        if not wr_parsed:
+            continue
+        user_ms = time_to_total_ms(mins, secs, ms)
+        wr_ms = time_to_total_ms(*wr_parsed)
+        diff = user_ms - wr_ms
+        diff_s = diff / 1000.0
+        formatted_user = format_time(mins, secs, ms)
+        formatted_wr = format_time(*wr_parsed)
+        entry = f"{track_name}: {formatted_user} (WR: {formatted_wr}, +{diff_s:.3f}s)"
+        if diff_s <= 1:
+            buckets["Within 1s"].append(entry)
+        elif diff_s <= 2:
+            buckets["Within 2s"].append(entry)
+        elif diff_s <= 3:
+            buckets["Within 3s"].append(entry)
+        elif diff_s <= 5:
+            buckets["Within 5s"].append(entry)
+        elif diff_s <= 7:
+            buckets["Within 7s"].append(entry)
+        else:
+            buckets["7s+"].append(entry)
+
+    embed = discord.Embed(title=f"⏱️ Your Shrooms Times vs World Records ({cc})", color=0x3498db)
+    for group, entries in buckets.items():
+        if entries:
+            embed.add_field(name=group, value="\n".join(entries), inline=False)
+        else:
+            embed.add_field(name=group, value="None", inline=False)
+
+    embed.set_footer(text="World records: Shrooms only. Times shown are your PBs for each track.")
+    await interaction.response.send_message(embed=embed)
 
 # Run the bot
 if __name__ == "__main__":
