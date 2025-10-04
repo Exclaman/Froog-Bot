@@ -1,3 +1,10 @@
+from karts_config import MK8_VEHICLES
+# Autocomplete for vehicle argument
+async def vehicle_autocomplete(interaction, current: str):
+    return [discord.app_commands.Choice(name=vehicle, value=vehicle) for vehicle in MK8_VEHICLES if current.lower() in vehicle.lower()][:25]
+# Autocomplete for cc argument
+async def cc_autocomplete(interaction, current: str):
+    return [discord.app_commands.Choice(name=cc, value=cc) for cc in ["150cc", "200cc"] if current.lower() in cc]
 import discord
 from discord.ext import commands
 import sqlite3
@@ -178,15 +185,16 @@ async def compare_wr_itemless(interaction: discord.Interaction):
 @discord.app_commands.autocomplete(
     track=track_autocomplete,
     mode=mode_autocomplete,
-    items=items_autocomplete
+    items=items_autocomplete,
+    vehicle=vehicle_autocomplete
 )
 async def add_time(
-    interaction: discord.Interaction, 
-    track: str, 
-    time: str, 
-    mode: str = "150cc", 
-    items: str = "shrooms",   
-    vehicle: str | None = None, 
+    interaction: discord.Interaction,
+    track: str,
+    time: str,
+    mode: str,
+    items: str,
+    vehicle: str | None = None,
     notes: str | None = None
 ):
     # Validate track
@@ -276,17 +284,17 @@ async def add_time(
 async def view_times(interaction: discord.Interaction, track: str, mode: str = "150cc", items: str = "shrooms"):
     # Validate track
     if track not in MK8_TRACKS:
-        await interaction.response.send_message(f"❌ Invalid track name. Use `/list_tracks` to see all available tracks.", ephemeral=True)
+        await interaction.response.send_message(f"❌ Invalid track name. Use `/list_tracks` to see all available tracks.")
         return
     
     # Validate mode
     if mode not in GAME_MODES:
-        await interaction.response.send_message(f"❌ Invalid game mode. Choose from: {', '.join(GAME_MODES)}", ephemeral=True)
+        await interaction.response.send_message(f"❌ Invalid game mode. Choose from: {', '.join(GAME_MODES)}")
         return
     
     # Validate items
     if items not in ["shrooms", "no_items"]:
-        await interaction.response.send_message("❌ Invalid items setting. Choose `shrooms` or `no_items`.", ephemeral=True)
+        await interaction.response.send_message("❌ Invalid items setting. Choose `shrooms` or `no_items`.")
         return
     
     conn = sqlite3.connect('mario_kart_times.db')
@@ -334,17 +342,17 @@ async def view_times(interaction: discord.Interaction, track: str, mode: str = "
 async def personal_best(interaction: discord.Interaction, track: str, mode: str = "150cc", items: str = "shrooms"):
     # Validate track
     if track not in MK8_TRACKS:
-        await interaction.response.send_message(f"❌ Invalid track name. Use `/list_tracks` to see all available tracks.", ephemeral=True)
+        await interaction.response.send_message(f"❌ Invalid track name. Use `/list_tracks` to see all available tracks.")
         return
     
     # Validate mode
     if mode not in GAME_MODES:
-        await interaction.response.send_message(f"❌ Invalid game mode. Choose from: {', '.join(GAME_MODES)}", ephemeral=True)
+        await interaction.response.send_message(f"❌ Invalid game mode. Choose from: {', '.join(GAME_MODES)}")
         return
     
     # Validate items
     if items not in ["shrooms", "no_items"]:
-        await interaction.response.send_message("❌ Invalid items setting. Choose `shrooms` or `no_items`.", ephemeral=True)
+        await interaction.response.send_message("❌ Invalid items setting. Choose `shrooms` or `no_items`.")
         return
     
     conn = sqlite3.connect('mario_kart_times.db')
@@ -400,7 +408,7 @@ async def delete_time(
     if track not in MK8_TRACKS:
         await interaction.response.send_message(
             f"❌ Invalid track name. Use `/list_tracks` to see all available tracks.",
-            ephemeral=True
+            # ephemeral removed
         )
         return
     
@@ -408,7 +416,7 @@ async def delete_time(
     if mode not in GAME_MODES:
         await interaction.response.send_message(
             f"❌ Invalid game mode. Choose from: {', '.join(GAME_MODES)}",
-            ephemeral=True
+            # ephemeral removed
         )
         return
     
@@ -416,7 +424,7 @@ async def delete_time(
     if items not in ["shrooms", "no_items"]:
         await interaction.response.send_message(
             "❌ Invalid items setting. Choose `shrooms` or `no_items`.",
-            ephemeral=True
+            # ephemeral removed
         )
         return
     
@@ -438,7 +446,7 @@ async def delete_time(
         conn.close()
         await interaction.response.send_message(
             f"❌ No records found for {track} in {mode} mode ({items}).",
-            ephemeral=True
+            # ephemeral removed
         )
         return
     
@@ -465,7 +473,7 @@ async def delete_time(
 @discord.app_commands.autocomplete(track=track_autocomplete)
 async def clear_track(interaction: discord.Interaction, track: str):
     if track not in MK8_TRACKS:
-        await interaction.response.send_message(f"❌ Invalid track name. Use `/list_tracks` to see all available tracks.", ephemeral=True)
+        await interaction.response.send_message(f"❌ Invalid track name. Use `/list_tracks` to see all available tracks.")
         return
     
     conn = sqlite3.connect('mario_kart_times.db')
@@ -535,18 +543,18 @@ async def list_tracks(interaction: discord.Interaction):
     
     embed.set_footer(text="Total: 96 tracks across 24 cups (12 Base Game + 12 DLC)")
     
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="stats", description="View your overall time trial statistics")
 async def stats(interaction: discord.Interaction, mode: str = "150cc", items: str = "shrooms"):
     # Validate mode
     if mode not in GAME_MODES:
-        await interaction.response.send_message(f"❌ Invalid game mode. Choose from: {', '.join(GAME_MODES)}", ephemeral=True)
+        await interaction.response.send_message(f"❌ Invalid game mode. Choose from: {', '.join(GAME_MODES)}")
         return
     
     # Validate items
     if items not in ["shrooms", "no_items"]:
-        await interaction.response.send_message("❌ Invalid items setting. Choose `shrooms` or `no_items`.", ephemeral=True)
+        await interaction.response.send_message("❌ Invalid items setting. Choose `shrooms` or `no_items`.")
         return
     
     conn = sqlite3.connect('mario_kart_times.db')
@@ -616,11 +624,11 @@ async def stats(interaction: discord.Interaction, mode: str = "150cc", items: st
 
 
 @bot.tree.command(name="compare_wr_shrooms", description="Compare your shrooms times to world records and group by proximity (150cc/200cc)")
+@discord.app_commands.autocomplete(cc=cc_autocomplete)
 async def compare_wr_shrooms(interaction: discord.Interaction, cc: str = "150cc"):
     if cc not in WORLD_RECORDS_SHROOMS:
         await interaction.response.send_message(f"❌ Invalid CC. Choose '150cc' or '200cc'", ephemeral=True)
         return
-
     items = "shrooms"
     mode = cc
 
