@@ -1,10 +1,45 @@
+
+# ...existing code...
+
+@bot.tree.command(name="leaderboard", description="Show the top time for every track, mode, and items setting.")
+@discord.app_commands.autocomplete(
+    mode=mode_autocomplete,
+    items=items_autocomplete
+)
+async def leaderboard(interaction: discord.Interaction, mode: str, items: str):
+    conn = sqlite3.connect('mario_kart_times.db')
+    cursor = conn.cursor()
+    embed = discord.Embed(title=f"🏆 Leaderboard ({mode}, {items})", color=0x00bfff)
+    for track in MK8_TRACKS:
+        cursor.execute('''
+            SELECT user_id, time_minutes, time_seconds, time_milliseconds, vehicle_setup
+            FROM time_trials
+            WHERE track_name = ? AND game_mode = ? AND items_setting = ?
+            ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC
+            LIMIT 1
+        ''', (track, mode, items))
+        result = cursor.fetchone()
+        if result:
+            user_id, mins, secs, ms, vehicle = result
+            user = await bot.fetch_user(user_id)
+            formatted_time = format_time(mins, secs, ms)
+            vehicle_str = f" ({vehicle})" if vehicle else ""
+            embed.add_field(name=track, value=f"{user.display_name}: {formatted_time}{vehicle_str}", inline=False)
+        else:
+            embed.add_field(name=track, value="No record", inline=False)
+    conn.close()
+    await interaction.response.send_message(embed=embed)
 from karts_config import MK8_VEHICLES
 # Autocomplete for vehicle argument
-async def vehicle_autocomplete(interaction, current: str):
-    return [discord.app_commands.Choice(name=vehicle, value=vehicle) for vehicle in MK8_VEHICLES if current.lower() in vehicle.lower()][:25]
+async def test_autocomplete(interaction, current: str):
+    from discord import app_commands
+    return [app_commands.Choice(name="Test", value="Test")]
 # Autocomplete for cc argument
 async def cc_autocomplete(interaction, current: str):
-    return [discord.app_commands.Choice(name=cc, value=cc) for cc in ["150cc", "200cc"] if current.lower() in cc]
+    try:
+        return [discord.app_commands.Choice(name=cc, value=cc) for cc in ["150cc", "200cc"] if current.lower() in cc]
+    except Exception:
+        return []
 import discord
 from discord.ext import commands
 import sqlite3
@@ -96,15 +131,24 @@ from tracks_config import MK8_TRACKS, GAME_MODES
 # Autocomplete functions
 async def track_autocomplete(interaction: discord.Interaction, current: str):
     from discord import app_commands
-    return [app_commands.Choice(name=track, value=track) for track in MK8_TRACKS if current.lower() in track.lower()][:25]
+    try:
+        return [app_commands.Choice(name=track, value=track) for track in MK8_TRACKS if current.lower() in track.lower()][:25]
+    except Exception:
+        return []
 
 async def mode_autocomplete(interaction: discord.Interaction, current: str):
     from discord import app_commands
-    return [app_commands.Choice(name=mode, value=mode) for mode in GAME_MODES if current.lower() in mode.lower()][:25]
+    try:
+        return [app_commands.Choice(name=mode, value=mode) for mode in GAME_MODES if current.lower() in mode.lower()][:25]
+    except Exception:
+        return []
 
 async def items_autocomplete(interaction: discord.Interaction, current: str):
     from discord import app_commands
-    return [app_commands.Choice(name=item, value=item) for item in ["shrooms", "no_items"] if current.lower() in item.lower()]
+    try:
+        return [app_commands.Choice(name=item, value=item) for item in ["shrooms", "no_items"] if current.lower() in item.lower()]
+    except Exception:
+        return []
 from world_records_itemless import WORLD_RECORDS_ITEMLESS
 from world_records_shrooms import WORLD_RECORDS_SHROOMS
 
@@ -186,7 +230,7 @@ async def compare_wr_itemless(interaction: discord.Interaction):
     track=track_autocomplete,
     mode=mode_autocomplete,
     items=items_autocomplete,
-    vehicle=vehicle_autocomplete
+    vehicle=test_autocomplete
 )
 async def add_time(
     interaction: discord.Interaction,
