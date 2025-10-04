@@ -1,156 +1,73 @@
-
-# ...existing code...
-
-@bot.tree.command(name="leaderboard", description="Show the top time for every track, mode, and items setting.")
-@discord.app_commands.autocomplete(
-    mode=mode_autocomplete,
-    items=items_autocomplete
-)
-async def leaderboard(interaction: discord.Interaction, mode: str, items: str):
-    conn = sqlite3.connect('mario_kart_times.db')
-    cursor = conn.cursor()
-    embed = discord.Embed(title=f"🏆 Leaderboard ({mode}, {items})", color=0x00bfff)
-    for track in MK8_TRACKS:
-        cursor.execute('''
-            SELECT user_id, time_minutes, time_seconds, time_milliseconds, vehicle_setup
-            FROM time_trials
-            WHERE track_name = ? AND game_mode = ? AND items_setting = ?
-            ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC
-            LIMIT 1
-        ''', (track, mode, items))
-        result = cursor.fetchone()
-        if result:
-            user_id, mins, secs, ms, vehicle = result
-            user = await bot.fetch_user(user_id)
-            formatted_time = format_time(mins, secs, ms)
-            vehicle_str = f" ({vehicle})" if vehicle else ""
-            embed.add_field(name=track, value=f"{user.display_name}: {formatted_time}{vehicle_str}", inline=False)
-        else:
-            embed.add_field(name=track, value="No record", inline=False)
-    conn.close()
-    await interaction.response.send_message(embed=embed)
-from karts_config import MK8_VEHICLES
-# Autocomplete for vehicle argument
-async def test_autocomplete(interaction, current: str):
-    from discord import app_commands
-    return [app_commands.Choice(name="Test", value="Test")]
-# Autocomplete for cc argument
-async def cc_autocomplete(interaction, current: str):
-    try:
-        return [discord.app_commands.Choice(name=cc, value=cc) for cc in ["150cc", "200cc"] if current.lower() in cc]
-    except Exception:
-        return []
 import discord
-from discord.ext import commands
 import sqlite3
-import datetime
-import re
+import os
 from dotenv import load_dotenv
 load_dotenv()
-import os
+from tracks_config import MK8_TRACKS, GAME_MODES
+from karts_config import MK8_VEHICLES
+from world_records_itemless import WORLD_RECORDS_ITEMLESS
+from world_records_shrooms import WORLD_RECORDS_SHROOMS
+from discord.ext import commands
 
-# Bot setup
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix='!', intents=intents)
+# Helper functions
+async def track_autocomplete(interaction, current: str):
+    return [discord.app_commands.Choice(name=track, value=track) for track in MK8_TRACKS if current.lower() in track.lower()][:25]
 
-# Database setup
+async def mode_autocomplete(interaction, current: str):
+    return [discord.app_commands.Choice(name=mode, value=mode) for mode in GAME_MODES if current.lower() in mode.lower()][:25]
+
+async def items_autocomplete(interaction, current: str):
+    return [discord.app_commands.Choice(name=item, value=item) for item in ["shrooms", "no_items"] if current.lower() in item.lower()][:25]
+
+async def test_autocomplete(interaction, current: str):
+    return [discord.app_commands.Choice(name=vehicle, value=vehicle) for vehicle in MK8_VEHICLES if current.lower() in vehicle.lower()][:25]
+
+async def cc_autocomplete(interaction, current: str):
+    return [discord.app_commands.Choice(name=cc, value=cc) for cc in ["150cc", "200cc"] if current.lower() in cc.lower()][:25]
+
+def truncate_text(text, max_length):
+    if not text:
+        return ""
+    return text if len(text) <= max_length else text[:max_length-3] + "..."
+
+def parse_time(time_str):
+    # Accepts MM:SS.mmm or M:SS.mmm
+    try:
+        mins_secs, ms = time_str.split('.')
+        mins, secs = mins_secs.split(':')
+        return int(mins), int(secs), int(ms)
+    except Exception:
+        return None
+
+def format_time(mins, secs, ms):
+    return f"{mins}:{secs:02d}.{ms:03d}"
+
+def time_to_total_ms(mins, secs, ms):
+    return mins * 60000 + secs * 1000 + ms
+
 def init_database():
     conn = sqlite3.connect('mario_kart_times.db')
     cursor = conn.cursor()
-    
-    # Ensure table exists
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS time_trials (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            track_name TEXT NOT NULL,
-            time_minutes INTEGER NOT NULL,
-            time_seconds INTEGER NOT NULL,
-            time_milliseconds INTEGER NOT NULL,
-            game_mode TEXT NOT NULL DEFAULT '150cc',
+            user_id INTEGER,
+            track_name TEXT,
+            time_minutes INTEGER,
+            time_seconds INTEGER,
+            time_milliseconds INTEGER,
+            game_mode TEXT,
+            items_setting TEXT,
             vehicle_setup TEXT,
-            date_recorded TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            notes TEXT
+            notes TEXT,
+            date_recorded TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    
-    # --- Migration check for items_setting column ---
-    cursor.execute("PRAGMA table_info(time_trials)")
-    columns = [col[1] for col in cursor.fetchall()]
-    
-    if "items_setting" not in columns:
-        print("⚠️ Adding missing column: items_setting")
-        cursor.execute("ALTER TABLE time_trials ADD COLUMN items_setting TEXT NOT NULL DEFAULT 'shrooms'")
-        conn.commit()
-
-    # Create index for better query performance (now including items_setting)
-    cursor.execute('''
-        CREATE INDEX IF NOT EXISTS idx_user_track_mode_items
-        ON time_trials (user_id, track_name, game_mode, items_setting)
-    ''')
-    
     conn.commit()
     conn.close()
 
-# Helper functions
-def parse_time(time_str):
-    """Parse time in format MM:SS.mmm or M:SS.mmm"""
-    pattern = r'^(\d{1,2}):(\d{2})\.(\d{3})$'
-    match = re.match(pattern, time_str)
-    if not match:
-        return None
-    
-    minutes = int(match.group(1))
-    seconds = int(match.group(2))
-    milliseconds = int(match.group(3))
-    
-    if seconds >= 60:
-        return None
-    
-    return minutes, seconds, milliseconds
-
-def format_time(minutes, seconds, milliseconds):
-    """Format time as MM:SS.mmm"""
-    return f"{minutes}:{seconds:02d}.{milliseconds:03d}"
-
-def time_to_total_ms(minutes, seconds, milliseconds):
-    """Convert time to total milliseconds for comparison"""
-    return (minutes * 60 * 1000) + (seconds * 1000) + milliseconds
-
-def truncate_text(text, max_length=100):
-    """Truncate text to fit Discord field limits"""
-    if not text:
-        return text
-    if len(text) <= max_length:
-        return text
-    return text[:max_length-3] + "..."
-
-from tracks_config import MK8_TRACKS, GAME_MODES
-
-# Autocomplete functions
-async def track_autocomplete(interaction: discord.Interaction, current: str):
-    from discord import app_commands
-    try:
-        return [app_commands.Choice(name=track, value=track) for track in MK8_TRACKS if current.lower() in track.lower()][:25]
-    except Exception:
-        return []
-
-async def mode_autocomplete(interaction: discord.Interaction, current: str):
-    from discord import app_commands
-    try:
-        return [app_commands.Choice(name=mode, value=mode) for mode in GAME_MODES if current.lower() in mode.lower()][:25]
-    except Exception:
-        return []
-
-async def items_autocomplete(interaction: discord.Interaction, current: str):
-    from discord import app_commands
-    try:
-        return [app_commands.Choice(name=item, value=item) for item in ["shrooms", "no_items"] if current.lower() in item.lower()]
-    except Exception:
-        return []
-from world_records_itemless import WORLD_RECORDS_ITEMLESS
-from world_records_shrooms import WORLD_RECORDS_SHROOMS
+# Bot setup
+bot = commands.Bot(command_prefix="!", intents=discord.Intents.default())
 
 @bot.event
 async def on_ready():
@@ -263,10 +180,8 @@ async def add_time(
         return
     
     minutes, seconds, milliseconds = parsed_time
-    
     conn = sqlite3.connect('mario_kart_times.db')
     cursor = conn.cursor()
-    
     # Check personal best for this user/track/mode/items
     cursor.execute('''
         SELECT time_minutes, time_seconds, time_milliseconds 
@@ -275,16 +190,41 @@ async def add_time(
         ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC
         LIMIT 1
     ''', (interaction.user.id, track, mode, items))
-    
     current_best = cursor.fetchone()
-    
     # Insert new record
     cursor.execute('''
         INSERT INTO time_trials (user_id, track_name, time_minutes, time_seconds, time_milliseconds, game_mode, items_setting, vehicle_setup, notes)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (interaction.user.id, track, minutes, seconds, milliseconds, mode, items, vehicle or "", notes or ""))
-    
     conn.commit()
+    # Check if this is now the top time for this track/mode/items
+    cursor.execute('''
+        SELECT user_id, time_minutes, time_seconds, time_milliseconds 
+        FROM time_trials 
+        WHERE track_name = ? AND game_mode = ? AND items_setting = ?
+        ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC
+        LIMIT 1
+    ''', (track, mode, items))
+    top_time = cursor.fetchone()
+    ping_message = None
+    if top_time:
+        top_user_id, top_mins, top_secs, top_ms = top_time
+        new_total_ms = time_to_total_ms(minutes, seconds, milliseconds)
+        top_total_ms = time_to_total_ms(top_mins, top_secs, top_ms)
+        if top_user_id == interaction.user.id:
+            # This user now holds the top time
+            # Find previous top holder (if any, and not this user)
+            cursor.execute('''
+                SELECT user_id FROM time_trials 
+                WHERE track_name = ? AND game_mode = ? AND items_setting = ?
+                AND (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) < ?
+                ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) DESC
+                LIMIT 1
+            ''', (track, mode, items, new_total_ms))
+            previous_holder = cursor.fetchone()
+            if previous_holder and previous_holder[0] != interaction.user.id:
+                prev_user = await bot.fetch_user(previous_holder[0])
+                ping_message = f"🏁 <@{prev_user.id}> Your top time for {track} ({mode}, {items}) was just beaten!"
     conn.close()
     
     formatted_time = format_time(minutes, seconds, milliseconds)
@@ -292,8 +232,7 @@ async def add_time(
     embed.add_field(name="Track", value=track, inline=False)
     embed.add_field(name="Time", value=formatted_time, inline=True)
     embed.add_field(name="Mode", value=mode, inline=True)
-    embed.add_field(name="Items", value=items, inline=True)  # NEW FIELD
-    
+    embed.add_field(name="Items", value=items, inline=True)
     if vehicle:
         embed.add_field(name="Vehicle Setup", value=truncate_text(vehicle, 1000), inline=True)
     if notes:
@@ -316,7 +255,8 @@ async def add_time(
     else:
         embed.add_field(name="🎉 First Time on This Track!", value=f"This is your first recorded time for this track/mode/items setting.", inline=False)
         embed.color = 0xffd700
-    
+    if ping_message:
+        embed.add_field(name="Notification", value=ping_message, inline=False)
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="view_times", description="View your times for a specific track and mode/items")
@@ -735,7 +675,71 @@ async def compare_wr_shrooms(interaction: discord.Interaction, cc: str = "150cc"
     embed.set_footer(text="World records: Shrooms only. Times shown are your PBs for each track.")
     await interaction.response.send_message(embed=embed)
 
-# Run the bot
+@bot.tree.command(name="leaderboard", description="Show the top time for every track, mode, and items setting.")
+@discord.app_commands.autocomplete(
+    mode=mode_autocomplete,
+    items=items_autocomplete
+)
+async def leaderboard(interaction: discord.Interaction, mode: str, items: str):
+    conn = sqlite3.connect('mario_kart_times.db')
+    cursor = conn.cursor()
+    embed = discord.Embed(title=f"🏆 Leaderboard ({mode}, {items})", color=0x00bfff)
+    # Define cups and their track indices (same as list_tracks)
+    cups = [
+        ("Mushroom Cup", MK8_TRACKS[0:4]),
+        ("Flower Cup", MK8_TRACKS[4:8]),
+        ("Star Cup", MK8_TRACKS[8:12]),
+        ("Special Cup", MK8_TRACKS[12:16]),
+        ("Shell Cup", MK8_TRACKS[16:20]),
+        ("Banana Cup", MK8_TRACKS[20:24]),
+        ("Leaf Cup", MK8_TRACKS[24:28]),
+        ("Lightning Cup", MK8_TRACKS[28:32]),
+        ("Bell Cup", MK8_TRACKS[32:36]),
+        ("Egg Cup", MK8_TRACKS[36:40]),
+        ("Triforce Cup", MK8_TRACKS[40:44]),
+        ("Crossing Cup", MK8_TRACKS[44:48]),
+        ("Golden Dash Cup", MK8_TRACKS[48:52]),
+        ("Lucky Cat Cup", MK8_TRACKS[52:56]),
+        ("Turnip Cup", MK8_TRACKS[56:60]),
+        ("Propeller Cup", MK8_TRACKS[60:64]),
+        ("Rock Cup", MK8_TRACKS[64:68]),
+        ("Moon Cup", MK8_TRACKS[68:72]),
+        ("Fruit Cup", MK8_TRACKS[72:76]),
+        ("Boomerang Cup", MK8_TRACKS[76:80]),
+        ("Feather Cup", MK8_TRACKS[80:84]),
+        ("Cherry Cup", MK8_TRACKS[84:88]),
+        ("Acorn Cup", MK8_TRACKS[88:92]),
+        ("Spiny Cup", MK8_TRACKS[92:96])
+    ]
+    for cup_name, tracks in cups:
+        field_lines = []
+        for track in tracks:
+            cursor.execute('''
+                SELECT user_id, time_minutes, time_seconds, time_milliseconds, vehicle_setup
+                FROM time_trials
+                WHERE track_name = ? AND game_mode = ? AND items_setting = ?
+                ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC
+                LIMIT 1
+            ''', (track, mode, items))
+            result = cursor.fetchone()
+            if result:
+                user_id, mins, secs, ms, vehicle = result
+                try:
+                    user = await bot.fetch_user(user_id)
+                    user_name = user.display_name
+                except Exception:
+                    user_name = f"User {user_id}"
+                formatted_time = format_time(mins, secs, ms)
+                vehicle_str = f" ({vehicle})" if vehicle else ""
+                field_lines.append(f"{track}: {user_name} {formatted_time}{vehicle_str}")
+            else:
+                field_lines.append(f"{track}: No record")
+        embed.add_field(name=cup_name, value="\n".join(field_lines), inline=False)
+    conn.close()
+    embed.set_footer(text="Each field is a cup. Only 25 cups/fields allowed per embed.")
+    await interaction.response.send_message(embed=embed)
+
+# Main block
 if __name__ == "__main__":
     token = os.getenv('DISCORD_BOT_TOKEN')
     if not token:
