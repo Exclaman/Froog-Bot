@@ -197,6 +197,18 @@ async def add_time(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (interaction.user.id, track, minutes, seconds, milliseconds, mode, items, vehicle or "", notes or ""))
     conn.commit()
+    # Find previous best before this new record
+    cursor.execute('''
+        SELECT user_id, time_minutes, time_seconds, time_milliseconds 
+        FROM time_trials 
+        WHERE track_name = ? AND game_mode = ? AND items_setting = ?
+        AND user_id != ?
+        ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC
+        LIMIT 1
+    ''', (track, mode, items, interaction.user.id))
+    previous_holder = cursor.fetchone()
+    ping_message = None
+    ping_debug = None
     # Check if this is now the top time for this track/mode/items
     cursor.execute('''
         SELECT user_id, time_minutes, time_seconds, time_milliseconds 
@@ -206,25 +218,18 @@ async def add_time(
         LIMIT 1
     ''', (track, mode, items))
     top_time = cursor.fetchone()
-    ping_message = None
     if top_time:
         top_user_id, top_mins, top_secs, top_ms = top_time
-        new_total_ms = time_to_total_ms(minutes, seconds, milliseconds)
-        top_total_ms = time_to_total_ms(top_mins, top_secs, top_ms)
-        if top_user_id == interaction.user.id:
-            # This user now holds the top time
-            # Find previous top holder (if any, and not this user)
-            cursor.execute('''
-                SELECT user_id FROM time_trials 
-                WHERE track_name = ? AND game_mode = ? AND items_setting = ?
-                AND (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) < ?
-                ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) DESC
-                LIMIT 1
-            ''', (track, mode, items, new_total_ms))
-            previous_holder = cursor.fetchone()
-            if previous_holder and previous_holder[0] != interaction.user.id:
-                prev_user = await bot.fetch_user(previous_holder[0])
-                ping_message = f"🏁 <@{prev_user.id}> Your top time for {track} ({mode}, {items}) was just beaten!"
+        if top_user_id == interaction.user.id and previous_holder:
+            prev_user_id = previous_holder[0]
+            ping_message = f"🏁 <@{prev_user_id}> Your top time for {track} ({mode}, {items}) was just beaten!"
+            ping_debug = f"Ping should be sent to user_id: {prev_user_id}"
+        elif top_user_id == interaction.user.id:
+            ping_debug = "No previous holder found or previous holder is current user."
+        else:
+            ping_debug = "Current user does not hold top time."
+    else:
+        ping_debug = "No top_time found."
     conn.close()
     
     formatted_time = format_time(minutes, seconds, milliseconds)
@@ -237,7 +242,8 @@ async def add_time(
         embed.add_field(name="Vehicle Setup", value=truncate_text(vehicle, 1000), inline=True)
     if notes:
         embed.add_field(name="Notes", value=truncate_text(notes, 1000), inline=False)
-    
+    if ping_debug:
+        embed.add_field(name="Ping Debug", value=ping_debug, inline=False)
     # Personal best check
     if current_best:
         current_total_ms = time_to_total_ms(current_best[0], current_best[1], current_best[2])
@@ -256,8 +262,10 @@ async def add_time(
         embed.add_field(name="🎉 First Time on This Track!", value=f"This is your first recorded time for this track/mode/items setting.", inline=False)
         embed.color = 0xffd700
     if ping_message:
-        await interaction.channel.send(ping_message)
-        embed.add_field(name="Notification", value="A previous top player was pinged above.", inline=False)
+        try:
+            await interaction.channel.send(ping_message)
+        except Exception:
+            await interaction.followup.send(ping_message, ephemeral=False)
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="view_times", description="View your times for a specific track and mode/items")
