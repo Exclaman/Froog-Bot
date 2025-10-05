@@ -256,7 +256,8 @@ async def add_time(
         embed.add_field(name="🎉 First Time on This Track!", value=f"This is your first recorded time for this track/mode/items setting.", inline=False)
         embed.color = 0xffd700
     if ping_message:
-        embed.add_field(name="Notification", value=ping_message, inline=False)
+        await interaction.channel.send(ping_message)
+        embed.add_field(name="Notification", value="A previous top player was pinged above.", inline=False)
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="view_times", description="View your times for a specific track and mode/items")
