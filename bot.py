@@ -274,55 +274,41 @@ async def add_time(
     mode=mode_autocomplete,
     items=items_autocomplete
 )
-async def view_times(interaction: discord.Interaction, track: str, mode: str = "150cc", items: str = "shrooms"):
+async def view_times(interaction: discord.Interaction, track: str, mode: str = None, items: str = None):
     # Validate track
     if track not in MK8_TRACKS:
         await interaction.response.send_message(f"❌ Invalid track name. Use `/list_tracks` to see all available tracks.")
         return
-    
-    # Validate mode
-    if mode not in GAME_MODES:
-        await interaction.response.send_message(f"❌ Invalid game mode. Choose from: {', '.join(GAME_MODES)}")
-        return
-    
-    # Validate items
-    if items not in ["shrooms", "no_items"]:
-        await interaction.response.send_message("❌ Invalid items setting. Choose `shrooms` or `no_items`.")
-        return
-    
     conn = sqlite3.connect('mario_kart_times.db')
     cursor = conn.cursor()
-    
-    # Fetch all records for this user/track/mode/items
-    cursor.execute('''
-        SELECT time_minutes, time_seconds, time_milliseconds, vehicle_setup, date_recorded, notes
-        FROM time_trials 
-        WHERE user_id = ? AND track_name = ? AND game_mode = ? AND items_setting = ?
-        ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC
-    ''', (interaction.user.id, track, mode, items))
-    
+    # Build query
+    query = '''SELECT time_minutes, time_seconds, time_milliseconds, vehicle_setup, date_recorded, notes, game_mode, items_setting FROM time_trials WHERE user_id = ? AND track_name = ?'''
+    params = [interaction.user.id, track]
+    if mode:
+        query += ' AND game_mode = ?'
+        params.append(mode)
+    if items:
+        query += ' AND items_setting = ?'
+        params.append(items)
+    query += ' ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC'
+    cursor.execute(query, tuple(params))
     results = cursor.fetchall()
     conn.close()
-    
     if not results:
-        await interaction.response.send_message(f"❌ No times found for {track} in {mode} mode ({items}).", ephemeral=True)
+        await interaction.response.send_message(f"❌ No times found for {track}" + (f" in {mode} mode ({items})" if mode and items else "."), ephemeral=True)
         return
-    
     embed = discord.Embed(
-        title=f"📜 Times for {track} ({mode}, {items})",
+        title=f"📜 Times for {track}" + (f" ({mode}, {items})" if mode and items else " (All Categories)"),
         color=0x3498db
     )
-    
-    for idx, (mins, secs, ms, vehicle, date_recorded, notes) in enumerate(results, 1):
+    for idx, (mins, secs, ms, vehicle, date_recorded, notes, rec_mode, rec_items) in enumerate(results, 1):
         formatted_time = format_time(mins, secs, ms)
-        field_value = f"⏱ {formatted_time} | 🗓 {date_recorded.split()[0]}"
+        field_value = f"⏱ {formatted_time} | 🗓 {date_recorded.split()[0]} | 🏷 {rec_mode}, {rec_items}"
         if vehicle:
             field_value += f" | 🚗 {truncate_text(vehicle, 50)}"
         if notes:
             field_value += f" | 📝 {truncate_text(notes, 50)}"
-        
         embed.add_field(name=f"{idx}.", value=field_value, inline=False)
-    
     await interaction.response.send_message(embed=embed)
 
 
