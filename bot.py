@@ -538,81 +538,123 @@ async def list_tracks(interaction: discord.Interaction):
     
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="stats", description="View your overall time trial statistics")
-async def stats(interaction: discord.Interaction, mode: str = "150cc", items: str = "shrooms"):
+@bot.tree.command(name="stats", description="View your time trial stats and comparisons.")
+async def stats(
+    interaction: discord.Interaction,
+    mode: str = "150cc",
+    items: str = "shrooms",
+    compare_user: str = None
+):
     # Validate mode
     if mode not in GAME_MODES:
         await interaction.response.send_message(f"❌ Invalid game mode. Choose from: {', '.join(GAME_MODES)}")
         return
-    
     # Validate items
     if items not in ["shrooms", "no_items"]:
         await interaction.response.send_message("❌ Invalid items setting. Choose `shrooms` or `no_items`.")
         return
-    
     conn = sqlite3.connect('mario_kart_times.db')
     cursor = conn.cursor()
-    
-    # Count distinct tracks with times for this user/mode/items
+    # Total run submissions
     cursor.execute('''
-        SELECT COUNT(DISTINCT track_name) 
-        FROM time_trials 
+        SELECT COUNT(*) FROM time_trials WHERE user_id = ? AND game_mode = ? AND items_setting = ?
+    ''', (interaction.user.id, mode, items))
+    total_submissions = cursor.fetchone()[0]
+    # Most played track
+    cursor.execute('''
+        SELECT track_name, COUNT(*) as cnt FROM time_trials
         WHERE user_id = ? AND game_mode = ? AND items_setting = ?
+        GROUP BY track_name ORDER BY cnt DESC LIMIT 1
+    ''', (interaction.user.id, mode, items))
+    most_played = cursor.fetchone()
+    # Recent activity (last 5 runs)
+    cursor.execute('''
+        SELECT track_name, time_minutes, time_seconds, time_milliseconds, date_recorded FROM time_trials
+        WHERE user_id = ? AND game_mode = ? AND items_setting = ?
+        ORDER BY date_recorded DESC LIMIT 5
+    ''', (interaction.user.id, mode, items))
+    recent_runs = cursor.fetchall()
+    # Track completion rate
+    cursor.execute('''
+        SELECT COUNT(DISTINCT track_name) FROM time_trials WHERE user_id = ? AND game_mode = ? AND items_setting = ?
     ''', (interaction.user.id, mode, items))
     tracks_recorded = cursor.fetchone()[0]
-    
-    # Total time trials for this user/mode/items
-    cursor.execute('''
-        SELECT COUNT(*)
-        FROM time_trials
-        WHERE user_id = ? AND game_mode = ? AND items_setting = ?
-    ''', (interaction.user.id, mode, items))
-    total_records = cursor.fetchone()[0]
-    
-    # Fastest time across all tracks (this user/mode/items only)
-    cursor.execute('''
-        SELECT track_name, time_minutes, time_seconds, time_milliseconds
-        FROM time_trials 
-        WHERE user_id = ? AND game_mode = ? AND items_setting = ?
-        ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC
-        LIMIT 1
-    ''', (interaction.user.id, mode, items))
-    best_time = cursor.fetchone()
-    
-    # Slowest time across all tracks (this user/mode/items only)
-    cursor.execute('''
-        SELECT track_name, time_minutes, time_seconds, time_milliseconds
-        FROM time_trials 
-        WHERE user_id = ? AND game_mode = ? AND items_setting = ?
-        ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) DESC
-        LIMIT 1
-    ''', (interaction.user.id, mode, items))
-    worst_time = cursor.fetchone()
-    
+    completion_rate = f"{tracks_recorded}/{len(MK8_TRACKS)} ({(tracks_recorded/len(MK8_TRACKS))*100:.1f}%)"
+    # Average rank per map & WR gap
+    ranks = []
+    wr_gaps = []
+    for track in MK8_TRACKS:
+        cursor.execute('''
+            SELECT user_id, time_minutes, time_seconds, time_milliseconds FROM time_trials
+            WHERE track_name = ? AND game_mode = ? AND items_setting = ?
+            ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC
+        ''', (track, mode, items))
+        all_times = cursor.fetchall()
+        user_best = None
+        for idx, (uid, mins, secs, ms) in enumerate(all_times, 1):
+            if uid == interaction.user.id:
+                user_best = (mins, secs, ms, idx)
+                break
+        if user_best:
+            ranks.append(user_best[3])
+            if items == "shrooms":
+                wr_dict = WORLD_RECORDS_SHROOMS.get(mode, {})
+                wr_time_str = wr_dict.get(track) if wr_dict else None
+            else:
+                wr_time_str = WORLD_RECORDS_ITEMLESS.get(track)
+            wr_parsed = parse_time(wr_time_str) if wr_time_str else None
+            if wr_parsed:
+                user_ms = time_to_total_ms(user_best[0], user_best[1], user_best[2])
+                wr_ms = time_to_total_ms(*wr_parsed)
+                wr_gaps.append(user_ms - wr_ms)
+    avg_rank = sum(ranks) / len(ranks) if ranks else None
+    avg_gap = (sum(wr_gaps) / len(wr_gaps)) / 1000 if wr_gaps else None
+    # Head-to-head comparison
+    head_to_head = None
+    if compare_user:
+        try:
+            compare_id = int(compare_user)
+            wins = 0
+            losses = 0
+            for track in MK8_TRACKS:
+                cursor.execute('''
+                    SELECT user_id, time_minutes, time_seconds, time_milliseconds FROM time_trials
+                    WHERE track_name = ? AND game_mode = ? AND items_setting = ?
+                    ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC
+                    LIMIT 2
+                ''', (track, mode, items))
+                top_two = cursor.fetchall()
+                if len(top_two) == 2:
+                    if top_two[0][0] == interaction.user.id and top_two[1][0] == compare_id:
+                        wins += 1
+                    elif top_two[0][0] == compare_id and top_two[1][0] == interaction.user.id:
+                        losses += 1
+            head_to_head = f"Wins: {wins}, Losses: {losses}"
+        except Exception:
+            head_to_head = "Invalid user ID for comparison."
     conn.close()
-    
-    # Build stats embed
-    embed = discord.Embed(
-        title=f"📊 Time Trial Stats ({mode}, {items})",
-        color=0x9b59b6
-    )
-    
-    embed.add_field(name="🏁 Tracks Recorded", value=str(tracks_recorded), inline=True)
-    embed.add_field(name="📂 Total Records", value=str(total_records), inline=True)
-    
-    if best_time:
-        embed.add_field(
-            name="⚡ Fastest Time",
-            value=f"{format_time(best_time[1], best_time[2], best_time[3])} ({best_time[0]})",
-            inline=False
-        )
-    if worst_time:
-        embed.add_field(
-            name="🐢 Slowest Time",
-            value=f"{format_time(worst_time[1], worst_time[2], worst_time[3])} ({worst_time[0]})",
-            inline=False
-        )
-    
+    embed = discord.Embed(title=f"📊 Time Trial Stats ({mode}, {items})", color=0x9b59b6)
+    embed.add_field(name="Total Run Submissions", value=str(total_submissions), inline=True)
+    if avg_rank:
+        embed.add_field(name="Average Rank (per map)", value=f"{avg_rank:.2f}", inline=True)
+    else:
+        embed.add_field(name="Average Rank (per map)", value="No times recorded", inline=True)
+    if avg_gap is not None:
+        embed.add_field(name="Average Distance from WR", value=f"{avg_gap:.3f} seconds", inline=True)
+    else:
+        embed.add_field(name="Average Distance from WR", value="N/A", inline=True)
+    embed.add_field(name="Track Completion Rate", value=completion_rate, inline=True)
+    if most_played:
+        embed.add_field(name="Most Played Track", value=f"{most_played[0]} ({most_played[1]} runs)", inline=True)
+    else:
+        embed.add_field(name="Most Played Track", value="N/A", inline=True)
+    if recent_runs:
+        recent_str = "\n".join([f"{r[0]}: {format_time(r[1], r[2], r[3])} ({r[4].split()[0]})" for r in recent_runs])
+        embed.add_field(name="Recent Runs", value=recent_str, inline=False)
+    else:
+        embed.add_field(name="Recent Runs", value="N/A", inline=False)
+    if head_to_head:
+        embed.add_field(name="Head-to-Head vs User", value=head_to_head, inline=False)
     await interaction.response.send_message(embed=embed)
 
 
