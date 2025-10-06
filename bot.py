@@ -387,29 +387,29 @@ async def delete_time(
     if track not in MK8_TRACKS:
         await interaction.response.send_message(
             f"❌ Invalid track name. Use `/list_tracks` to see all available tracks.",
-            # ephemeral removed
+            ephemeral=True
         )
         return
-    
+
     # Validate mode
     if mode not in GAME_MODES:
         await interaction.response.send_message(
             f"❌ Invalid game mode. Choose from: {', '.join(GAME_MODES)}",
-            # ephemeral removed
+            ephemeral=True
         )
         return
-    
+
     # Validate items
     if items not in ["shrooms", "no_items"]:
         await interaction.response.send_message(
             "❌ Invalid items setting. Choose `shrooms` or `no_items`.",
-            # ephemeral removed
+            ephemeral=True
         )
         return
-    
+
     conn = sqlite3.connect('mario_kart_times.db')
     cursor = conn.cursor()
-    
+
     # Find the most recent record for this user/track/mode/items
     cursor.execute('''
         SELECT id, time_minutes, time_seconds, time_milliseconds, date_recorded
@@ -418,33 +418,33 @@ async def delete_time(
         ORDER BY date_recorded DESC
         LIMIT 1
     ''', (interaction.user.id, track, mode, items))
-    
+
     result = cursor.fetchone()
-    
+
     if not result:
         conn.close()
         await interaction.response.send_message(
             f"❌ No records found for {track} in {mode} mode ({items}).",
-            # ephemeral removed
+            ephemeral=True
         )
         return
-    
+
     record_id, mins, secs, ms, date_recorded = result
-    
+
     # Delete that record
     cursor.execute('DELETE FROM time_trials WHERE id = ?', (record_id,))
     conn.commit()
     conn.close()
-    
+
     formatted_time = format_time(mins, secs, ms)
-    
+
     embed = discord.Embed(title="🗑️ Time Deleted", color=0xe74c3c)
     embed.add_field(name="Track", value=track, inline=False)
     embed.add_field(name="Mode", value=mode, inline=True)
     embed.add_field(name="Items", value=items, inline=True)
     embed.add_field(name="Time", value=formatted_time, inline=True)
     embed.add_field(name="Date Recorded", value=date_recorded.split()[0], inline=True)
-    
+
     await interaction.response.send_message(embed=embed)
 
 
@@ -452,7 +452,7 @@ async def delete_time(
 @discord.app_commands.autocomplete(track=track_autocomplete)
 async def clear_track(interaction: discord.Interaction, track: str):
     if track not in MK8_TRACKS:
-        await interaction.response.send_message(f"❌ Invalid track name. Use `/list_tracks` to see all available tracks.")
+        await interaction.response.send_message(f"❌ Invalid track name. Use `/list_tracks` to see all available tracks.", ephemeral=True)
         return
     
     conn = sqlite3.connect('mario_kart_times.db')
@@ -525,6 +525,10 @@ async def list_tracks(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="stats", description="View your time trial stats and comparisons.")
+@discord.app_commands.autocomplete(
+    mode=mode_autocomplete,
+    items=items_autocomplete
+)
 async def stats(
     interaction: discord.Interaction,
     mode: str = "150cc",
@@ -533,11 +537,11 @@ async def stats(
 ):
     # Validate mode
     if mode not in GAME_MODES:
-        await interaction.response.send_message(f"❌ Invalid game mode. Choose from: {', '.join(GAME_MODES)}")
+        await interaction.response.send_message(f"❌ Invalid game mode. Choose from: {', '.join(GAME_MODES)}", ephemeral=True)
         return
     # Validate items
     if items not in ["shrooms", "no_items"]:
-        await interaction.response.send_message("❌ Invalid items setting. Choose `shrooms` or `no_items`.")
+        await interaction.response.send_message("❌ Invalid items setting. Choose `shrooms` or `no_items`.", ephemeral=True)
         return
     conn = sqlite3.connect('mario_kart_times.db')
     cursor = conn.cursor()
