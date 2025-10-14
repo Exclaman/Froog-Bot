@@ -1,29 +1,90 @@
 import discord
 import sqlite3
 import os
+import random
+import datetime
+import asyncio
 from dotenv import load_dotenv
 load_dotenv()
 from tracks_config import MK8_TRACKS, GAME_MODES
 from karts_config import MK8_VEHICLES
 from world_records_itemless import WORLD_RECORDS_ITEMLESS
 from world_records_shrooms import WORLD_RECORDS_SHROOMS
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 # Helper functions
+def get_tour_tracks():
+    """Get list of all Tour tracks from MK8_TRACKS"""
+    return [track for track in MK8_TRACKS if track.startswith("Tour ")]
+
+def get_non_tour_tracks():
+    """Get list of all non-Tour tracks from MK8_TRACKS"""
+    return [track for track in MK8_TRACKS if not track.startswith("Tour ")]
+
+def select_weekly_tracks(week_number):
+    """Select 3 tracks for the week. Every other week includes 1 tour track."""
+    tour_tracks = get_tour_tracks()
+    non_tour_tracks = get_non_tour_tracks()
+    
+    # Every other week (odd week numbers) should include a tour track
+    if week_number % 2 == 1:
+        # Include 1 tour track and 2 regular tracks
+        selected_tracks = []
+        selected_tracks.append(random.choice(tour_tracks))
+        selected_tracks.extend(random.sample(non_tour_tracks, 2))
+    else:
+        # All regular tracks
+        selected_tracks = random.sample(non_tour_tracks, 3)
+    
+    return selected_tracks
+
+def get_current_week():
+    """Get current week number since October 14, 2025"""
+    today = datetime.date.today()
+    # Get Monday of current week
+    monday = today - datetime.timedelta(days=today.weekday())
+    # Calculate week number since October 14, 2025
+    start_date = datetime.date(2025, 10, 14)  # Start counting from today
+    # Find the Monday of the week containing October 14, 2025
+    start_monday = start_date - datetime.timedelta(days=start_date.weekday())
+    
+    week_number = (monday - start_monday).days // 7 + 1
+    return max(1, week_number)  # Ensure we never return 0 or negative
+
 async def track_autocomplete(interaction, current: str):
-    return [discord.app_commands.Choice(name=track, value=track) for track in MK8_TRACKS if current.lower() in track.lower()][:25]
+    try:
+        return [discord.app_commands.Choice(name=track, value=track) for track in MK8_TRACKS if current.lower() in track.lower()][:25]
+    except Exception as e:
+        print(f"Error in track_autocomplete: {e}")
+        return []
 
 async def mode_autocomplete(interaction, current: str):
-    return [discord.app_commands.Choice(name=mode, value=mode) for mode in GAME_MODES if current.lower() in mode.lower()][:25]
+    try:
+        return [discord.app_commands.Choice(name=mode, value=mode) for mode in GAME_MODES if current.lower() in mode.lower()][:25]
+    except Exception as e:
+        print(f"Error in mode_autocomplete: {e}")
+        return []
 
 async def items_autocomplete(interaction, current: str):
-    return [discord.app_commands.Choice(name=item, value=item) for item in ["shrooms", "no_items"] if current.lower() in item.lower()][:25]
+    try:
+        return [discord.app_commands.Choice(name=item, value=item) for item in ["shrooms", "no_items"] if current.lower() in item.lower()][:25]
+    except Exception as e:
+        print(f"Error in items_autocomplete: {e}")
+        return []
 
 async def test_autocomplete(interaction, current: str):
-    return [discord.app_commands.Choice(name=vehicle, value=vehicle) for vehicle in MK8_VEHICLES if current.lower() in vehicle.lower()][:25]
+    try:
+        return [discord.app_commands.Choice(name=vehicle, value=vehicle) for vehicle in MK8_VEHICLES if current.lower() in vehicle.lower()][:25]
+    except Exception as e:
+        print(f"Error in test_autocomplete: {e}")
+        return []
 
 async def cc_autocomplete(interaction, current: str):
-    return [discord.app_commands.Choice(name=cc, value=cc) for cc in ["150cc", "200cc"] if current.lower() in cc.lower()][:25]
+    try:
+        return [discord.app_commands.Choice(name=cc, value=cc) for cc in ["150cc", "200cc"] if current.lower() in cc.lower()][:25]
+    except Exception as e:
+        print(f"Error in cc_autocomplete: {e}")
+        return []
 
 def truncate_text(text, max_length):
     if not text:
@@ -63,21 +124,227 @@ def init_database():
             date_recorded TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+    
+    # Weekly trials table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS weekly_trials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            week_number INTEGER UNIQUE,
+            track1 TEXT,
+            track2 TEXT,
+            track3 TEXT,
+            start_date TEXT,
+            end_date TEXT,
+            is_active BOOLEAN DEFAULT 1
+        )
+    ''')
+    
+    # Weekly submissions table (separate from regular time_trials)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS weekly_submissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            week_number INTEGER,
+            user_id INTEGER,
+            track_name TEXT,
+            time_minutes INTEGER,
+            time_seconds INTEGER,
+            time_milliseconds INTEGER,
+            game_mode TEXT,
+            items_setting TEXT,
+            vehicle_setup TEXT,
+            notes TEXT,
+            date_recorded TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (week_number) REFERENCES weekly_trials(week_number)
+        )
+    ''')
+    
     conn.commit()
     conn.close()
 
+async def generate_weekly_leaderboard(week_number, tracks):
+    """Generate leaderboard embed for weekly trials"""
+    conn = sqlite3.connect('mario_kart_times.db')
+    cursor = conn.cursor()
+    
+    embed = discord.Embed(
+        title=f"🏆 Weekly Trials Results - Week {week_number}",
+        description="Final leaderboard for this week's trials",
+        color=0xffd700
+    )
+    
+    for i, track in enumerate(tracks, 1):
+        # Get top 5 times for this track
+        cursor.execute('''
+            SELECT user_id, time_minutes, time_seconds, time_milliseconds, vehicle_setup
+            FROM weekly_submissions
+            WHERE week_number = ? AND track_name = ?
+            ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC
+            LIMIT 5
+        ''', (week_number, track))
+        
+        results = cursor.fetchall()
+        
+        if results:
+            leaderboard_text = ""
+            for j, (user_id, mins, secs, ms, vehicle) in enumerate(results, 1):
+                formatted_time = format_time(mins, secs, ms)
+                try:
+                    user = await bot.fetch_user(user_id)
+                    username = user.display_name
+                except:
+                    username = f"User {user_id}"
+                
+                medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"][j-1]
+                vehicle_str = f" ({vehicle})" if vehicle else ""
+                leaderboard_text += f"{medal} {username}: {formatted_time}{vehicle_str}\n"
+            
+            embed.add_field(
+                name=f"{i}. {track}",
+                value=leaderboard_text,
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name=f"{i}. {track}",
+                value="No submissions",
+                inline=False
+            )
+    
+    conn.close()
+    return embed
+
 # Bot setup
 bot = commands.Bot(command_prefix="!", intents=discord.Intents.default())
+
+@tasks.loop(time=datetime.time(hour=12, minute=0))  # Sunday 12:00 PM
+async def start_weekly_trials():
+    """Start new weekly trials every Sunday at 12:00 PM"""
+    today = datetime.date.today()
+    if today.weekday() == 6:  # Sunday = 6
+        await setup_new_weekly_trials()
+
+@tasks.loop(time=datetime.time(hour=12, minute=0))  # Saturday 12:00 PM  
+async def end_weekly_trials():
+    """End weekly trials every Saturday at 12:00 PM and show results"""
+    today = datetime.date.today()
+    if today.weekday() == 5:  # Saturday = 5
+        await finish_weekly_trials()
+
+async def setup_new_weekly_trials(target_guild=None):
+    """Set up new weekly trials"""
+    week_number = get_current_week()
+    tracks = select_weekly_tracks(week_number)
+    
+    conn = sqlite3.connect('mario_kart_times.db')
+    cursor = conn.cursor()
+    
+    # Deactivate previous trials
+    cursor.execute('UPDATE weekly_trials SET is_active = 0 WHERE is_active = 1')
+    
+    # Insert new weekly trials
+    start_date = datetime.date.today().isoformat()
+    end_date = (datetime.date.today() + datetime.timedelta(days=6)).isoformat()
+    
+    cursor.execute('''
+        INSERT OR REPLACE INTO weekly_trials 
+        (week_number, track1, track2, track3, start_date, end_date, is_active)
+        VALUES (?, ?, ?, ?, ?, ?, 1)
+    ''', (week_number, tracks[0], tracks[1], tracks[2], start_date, end_date))
+    
+    conn.commit()
+    conn.close()
+    
+    # Announce new trials - if target_guild specified, only post there
+    guilds_to_announce = [target_guild] if target_guild else bot.guilds
+    
+    for guild in guilds_to_announce:
+        if guild is None:
+            continue
+        
+        # Find the specific time-trials-of-the-week channel (exact name match)
+        target_channels = [ch for ch in guild.text_channels if ch.name.lower().strip() == 'time-trials-of-the-week']
+        
+        if target_channels:
+            channel = target_channels[0]  # Use the first (should be only) match
+            print(f"📢 WEEKLY START: Posting to {guild.name} -> #{channel.name}")
+            embed = discord.Embed(
+                title="🏁 New Weekly Time Trials!",
+                description=f"Week {week_number} trials are now active!",
+                color=0x00ff00
+            )
+            embed.add_field(name="Featured Tracks", value=f"1. {tracks[0]}\n2. {tracks[1]}\n3. {tracks[2]}", inline=False)
+            embed.add_field(name="Duration", value=f"{start_date} to {end_date}", inline=False)
+            embed.add_field(name="How to Participate", value="Use `/add_time` with 150cc and shrooms for these tracks!", inline=False)
+            await channel.send(embed=embed)
+        else:
+            print(f"❌ No time-trials-of-the-week channel in: {guild.name}")
+
+async def finish_weekly_trials(target_guild=None):
+    """Finish current weekly trials and show leaderboard"""
+    conn = sqlite3.connect('mario_kart_times.db')
+    cursor = conn.cursor()
+    
+    # Get current active trials
+    cursor.execute('SELECT * FROM weekly_trials WHERE is_active = 1')
+    current_trial = cursor.fetchone()
+    
+    if current_trial:
+        week_number, track1, track2, track3 = current_trial[1], current_trial[2], current_trial[3], current_trial[4]
+        
+        # Generate leaderboard - if target_guild specified, only post there
+        guilds_to_announce = [target_guild] if target_guild else bot.guilds
+        
+        for guild in guilds_to_announce:
+            if guild is None:
+                continue
+            
+            # Find the specific time-trials-of-the-week channel (exact name match)
+            target_channels = [ch for ch in guild.text_channels if ch.name.lower().strip() == 'time-trials-of-the-week']
+            
+            if target_channels:
+                channel = target_channels[0]  # Use the first (should be only) match
+                print(f"📊 WEEKLY END: Posting leaderboard to {guild.name} -> #{channel.name}")
+                embed = await generate_weekly_leaderboard(week_number, [track1, track2, track3])
+                await channel.send(embed=embed)
+            else:
+                print(f"❌ No time-trials-of-the-week channel in: {guild.name}")
+    
+    conn.close()
 
 @bot.event
 async def on_ready():
     print(f'{bot.user} has connected to Discord!')
     init_database()
+    
+    # Start scheduled tasks
+    start_weekly_trials.start()
+    end_weekly_trials.start()
+    
+    # Check if we need to setup trials for current week (in case bot was offline)
+    await check_and_setup_current_week()
+    
     try:
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} command(s)")
+        # Print command names for debugging
+        for cmd in synced:
+            print(f"  - {cmd.name}")
     except Exception as e:
         print(f"Failed to sync commands: {e}")
+
+async def check_and_setup_current_week():
+    """Check if current week has active trials, if not, set them up"""
+    conn = sqlite3.connect('mario_kart_times.db')
+    cursor = conn.cursor()
+    
+    current_week = get_current_week()
+    cursor.execute('SELECT * FROM weekly_trials WHERE week_number = ? AND is_active = 1', (current_week,))
+    
+    if not cursor.fetchone():
+        # No active trials for current week, set them up
+        await setup_new_weekly_trials()
+    
+    conn.close()
 
 @bot.tree.command(name="compare_wr_itemless", description="Compare your shroomless times to world records and group by proximity")
 async def compare_wr_itemless(interaction: discord.Interaction):
@@ -197,6 +464,56 @@ async def add_time(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (interaction.user.id, track, minutes, seconds, milliseconds, mode, items, vehicle or "", notes or ""))
     conn.commit()
+    
+    # Check if this qualifies for weekly trials (150cc and shrooms only)
+    weekly_submission_made = False
+    weekly_best_info = None
+    if mode == "150cc" and items == "shrooms":
+        # Check if there are active weekly trials and if this track is part of them
+        cursor.execute('SELECT * FROM weekly_trials WHERE is_active = 1')
+        current_trial = cursor.fetchone()
+        
+        if current_trial:
+            week_number = current_trial[1]
+            active_tracks = [current_trial[2], current_trial[3], current_trial[4]]
+            
+            if track in active_tracks:
+                # Check current weekly best for this user/track
+                cursor.execute('''
+                    SELECT time_minutes, time_seconds, time_milliseconds 
+                    FROM weekly_submissions 
+                    WHERE week_number = ? AND user_id = ? AND track_name = ? AND game_mode = ? AND items_setting = ?
+                    ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC
+                    LIMIT 1
+                ''', (week_number, interaction.user.id, track, mode, items))
+                
+                current_weekly_best = cursor.fetchone()
+                
+                # Insert into weekly submissions
+                cursor.execute('''
+                    INSERT INTO weekly_submissions 
+                    (week_number, user_id, track_name, time_minutes, time_seconds, time_milliseconds, game_mode, items_setting, vehicle_setup, notes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (week_number, interaction.user.id, track, minutes, seconds, milliseconds, mode, items, vehicle or "", notes or ""))
+                conn.commit()
+                
+                weekly_submission_made = True
+                
+                # Check if this is a weekly personal best
+                if current_weekly_best:
+                    current_weekly_ms = time_to_total_ms(current_weekly_best[0], current_weekly_best[1], current_weekly_best[2])
+                    new_total_ms = time_to_total_ms(minutes, seconds, milliseconds)
+                    
+                    if new_total_ms < current_weekly_ms:
+                        improvement_ms = current_weekly_ms - new_total_ms
+                        improvement_seconds = improvement_ms / 1000
+                        weekly_best_info = f"🎉 New Weekly Best! Improved by {improvement_seconds:.3f}s"
+                    else:
+                        difference_ms = new_total_ms - current_weekly_ms
+                        difference_seconds = difference_ms / 1000
+                        weekly_best_info = f"Weekly Best: {format_time(current_weekly_best[0], current_weekly_best[1], current_weekly_best[2])} (+{difference_seconds:.3f}s)"
+                else:
+                    weekly_best_info = "🎉 First Weekly Submission for this track!"
     # Find previous best before this new record
     cursor.execute('''
         SELECT user_id, time_minutes, time_seconds, time_milliseconds 
@@ -261,6 +578,13 @@ async def add_time(
     else:
         embed.add_field(name="🎉 First Time on This Track!", value=f"This is your first recorded time for this track/mode/items setting.", inline=False)
         embed.color = 0xffd700
+    
+    # Add weekly trials information if applicable
+    if weekly_submission_made:
+        embed.add_field(name="📅 Weekly Trials", value=weekly_best_info, inline=False)
+        if weekly_best_info.startswith("🎉 New Weekly Best!"):
+            embed.color = 0xffd700
+    
     if ping_message:
         try:
             await interaction.channel.send(ping_message)
@@ -779,6 +1103,143 @@ async def leaderboard(interaction: discord.Interaction, mode: str, items: str):
     conn.close()
     embed.set_footer(text="Each field is a cup. Only 25 cups/fields allowed per embed.")
     await interaction.response.send_message(embed=embed)
+
+
+
+@bot.tree.command(name="current_trials", description="View current weekly time trials")
+async def current_trials(interaction: discord.Interaction):
+    # Check if command is used in the correct channel
+    if interaction.channel.name != 'time-trials-of-the-week':
+        await interaction.response.send_message(
+            "❌ This command can only be used in the #time-trials-of-the-week channel.",
+            ephemeral=True
+        )
+        return
+    
+    conn = sqlite3.connect('mario_kart_times.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM weekly_trials WHERE is_active = 1')
+    current_trial = cursor.fetchone()
+    
+    if not current_trial:
+        await interaction.response.send_message("❌ No active weekly trials at the moment.", ephemeral=True)
+        conn.close()
+        return
+    
+    week_number, track1, track2, track3, start_date, end_date = current_trial[1], current_trial[2], current_trial[3], current_trial[4], current_trial[5], current_trial[6]
+    
+    embed = discord.Embed(
+        title=f"🏁 Weekly Time Trials - Week {week_number}",
+        description="Current active weekly trials",
+        color=0x3498db
+    )
+    
+    embed.add_field(name="Featured Tracks", value=f"1. {track1}\n2. {track2}\n3. {track3}", inline=False)
+    embed.add_field(name="Duration", value=f"{start_date} to {end_date}", inline=False)
+    embed.add_field(name="How to Participate", value="Use `/add_time` with 150cc and shrooms for these tracks!", inline=False)
+    
+    # Show current participant count
+    cursor.execute('SELECT COUNT(DISTINCT user_id) FROM weekly_submissions WHERE week_number = ?', (week_number,))
+    participant_count = cursor.fetchone()[0]
+    embed.add_field(name="Participants", value=str(participant_count), inline=True)
+    
+    conn.close()
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="weekly_leaderboard", description="View current weekly trials leaderboard")
+async def weekly_leaderboard(interaction: discord.Interaction):
+    # Check if command is used in the correct channel
+    if interaction.channel.name != 'time-trials-of-the-week':
+        await interaction.response.send_message(
+            "❌ This command can only be used in the #time-trials-of-the-week channel.",
+            ephemeral=True
+        )
+        return
+    
+    conn = sqlite3.connect('mario_kart_times.db')
+    cursor = conn.cursor()
+    
+    cursor.execute('SELECT * FROM weekly_trials WHERE is_active = 1')
+    current_trial = cursor.fetchone()
+    
+    if not current_trial:
+        await interaction.response.send_message("❌ No active weekly trials at the moment.", ephemeral=True)
+        conn.close()
+        return
+    
+    week_number = current_trial[1]
+    tracks = [current_trial[2], current_trial[3], current_trial[4]]
+    
+    embed = await generate_weekly_leaderboard(week_number, tracks)
+    embed.title = f"🏆 Weekly Trials Leaderboard - Week {week_number}"
+    embed.description = "Current standings (live leaderboard)"
+    embed.color = 0x3498db
+    
+    conn.close()
+    await interaction.response.send_message(embed=embed)
+
+async def admin_action_autocomplete(interaction, current: str):
+    try:
+        actions = ["start_now", "end_now", "schedule"]
+        return [discord.app_commands.Choice(name=action, value=action) for action in actions if current.lower() in action.lower()][:25]
+    except Exception as e:
+        print(f"Error in admin_action_autocomplete: {e}")
+        return []
+
+@bot.tree.command(name="weekly_admin", description="Admin commands for weekly trials")
+@discord.app_commands.autocomplete(action=admin_action_autocomplete)
+@discord.app_commands.describe(
+    action="Action to perform",
+    time_hour="Hour for scheduling (0-23)",
+    time_minute="Minute for scheduling (0-59)"
+)
+async def weekly_admin(
+    interaction: discord.Interaction, 
+    action: str,
+    time_hour: int = 12,
+    time_minute: int = 0
+):
+    # Check if user has administrator permissions
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You need administrator permissions to use this command.", ephemeral=True)
+        return
+    
+    # Defer the response to avoid timeout
+    await interaction.response.defer(ephemeral=True)
+    
+    if action.lower() == "start_now":
+        await setup_new_weekly_trials(target_guild=interaction.guild)
+        await interaction.followup.send("✅ Started new weekly trials immediately.")
+    
+    elif action.lower() == "end_now":
+        await finish_weekly_trials(target_guild=interaction.guild)
+        await interaction.followup.send("✅ Ended current weekly trials and showed results.")
+    
+    elif action.lower() == "schedule":
+        # Update task timing (would require restart to take effect)
+        await interaction.followup.send(
+            f"⚠️ Schedule change requested to {time_hour:02d}:{time_minute:02d}. "
+            "Bot restart required for time changes to take effect."
+        )
+    
+    else:
+        await interaction.followup.send(
+            "❌ Invalid action. Available actions: `start_now`, `end_now`, `schedule`"
+        )
+
+@bot.tree.command(name="test_weekly", description="Test weekly trials posting (admin only)")
+async def test_weekly(interaction: discord.Interaction):
+    # Check if user has administrator permissions
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("❌ You need administrator permissions to use this command.", ephemeral=True)
+        return
+    
+    await interaction.response.defer(ephemeral=True)
+    
+    print(f"🧪 TEST: Manual weekly test triggered by {interaction.user} in {interaction.guild.name}")
+    await finish_weekly_trials(target_guild=interaction.guild)
+    await interaction.followup.send("✅ Test completed - check console and channels for output.")
 
 # Main block
 if __name__ == "__main__":
