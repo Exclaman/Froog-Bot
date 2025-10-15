@@ -1200,9 +1200,10 @@ async def weekly_admin(
     time_hour: int = 12,
     time_minute: int = 0
 ):
-    # Check if user has administrator permissions
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ You need administrator permissions to use this command.", ephemeral=True)
+    # Check if user has captain or coach role
+    user_roles = [role.name.lower() for role in interaction.user.roles]
+    if not any(role in user_roles for role in ['captain', 'coach']):
+        await interaction.response.send_message("❌ You need either the 'captain' or 'coach' role to use this command.", ephemeral=True)
         return
     
     # Defer the response to avoid timeout
@@ -1230,9 +1231,10 @@ async def weekly_admin(
 
 @bot.tree.command(name="test_weekly", description="Test weekly trials posting (admin only)")
 async def test_weekly(interaction: discord.Interaction):
-    # Check if user has administrator permissions
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("❌ You need administrator permissions to use this command.", ephemeral=True)
+    # Check if user has captain or coach role
+    user_roles = [role.name.lower() for role in interaction.user.roles]
+    if not any(role in user_roles for role in ['captain', 'coach']):
+        await interaction.response.send_message("❌ You need either the 'captain' or 'coach' role to use this command.", ephemeral=True)
         return
     
     await interaction.response.defer(ephemeral=True)
