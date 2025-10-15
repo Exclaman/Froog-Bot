@@ -300,9 +300,18 @@ async def on_ready():
     print(f'{bot.user} has connected to Discord!')
     init_database()
     
-    # Start scheduled tasks
-    start_weekly_trials.start()
-    end_weekly_trials.start()
+    # Start scheduled tasks only if they're not already running
+    if not start_weekly_trials.is_running():
+        start_weekly_trials.start()
+        print("✅ Started weekly trials task")
+    else:
+        print("ℹ️ Weekly trials task already running")
+        
+    if not end_weekly_trials.is_running():
+        end_weekly_trials.start()
+        print("✅ Started end weekly trials task")
+    else:
+        print("ℹ️ End weekly trials task already running")
     
     # Check if we need to setup trials for current week (in case bot was offline)
     await check_and_setup_current_week()
