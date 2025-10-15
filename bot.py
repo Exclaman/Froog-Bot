@@ -23,6 +23,9 @@ def get_non_tour_tracks():
 
 def select_weekly_tracks(week_number):
     """Select 3 tracks for the week. Every other week includes 1 tour track."""
+    # Use week number as seed to ensure consistent selection across all servers
+    random.seed(week_number)
+    
     tour_tracks = get_tour_tracks()
     non_tour_tracks = get_non_tour_tracks()
     
@@ -35,6 +38,9 @@ def select_weekly_tracks(week_number):
     else:
         # All regular tracks
         selected_tracks = random.sample(non_tour_tracks, 3)
+    
+    # Reset random seed to avoid affecting other random operations
+    random.seed()
     
     return selected_tracks
 
@@ -52,39 +58,19 @@ def get_current_week():
     return max(1, week_number)  # Ensure we never return 0 or negative
 
 async def track_autocomplete(interaction, current: str):
-    try:
-        return [discord.app_commands.Choice(name=track, value=track) for track in MK8_TRACKS if current.lower() in track.lower()][:25]
-    except Exception as e:
-        print(f"Error in track_autocomplete: {e}")
-        return []
+    return [discord.app_commands.Choice(name=track, value=track) for track in MK8_TRACKS if current.lower() in track.lower()][:25]
 
 async def mode_autocomplete(interaction, current: str):
-    try:
-        return [discord.app_commands.Choice(name=mode, value=mode) for mode in GAME_MODES if current.lower() in mode.lower()][:25]
-    except Exception as e:
-        print(f"Error in mode_autocomplete: {e}")
-        return []
+    return [discord.app_commands.Choice(name=mode, value=mode) for mode in GAME_MODES if current.lower() in mode.lower()][:25]
 
 async def items_autocomplete(interaction, current: str):
-    try:
-        return [discord.app_commands.Choice(name=item, value=item) for item in ["shrooms", "no_items"] if current.lower() in item.lower()][:25]
-    except Exception as e:
-        print(f"Error in items_autocomplete: {e}")
-        return []
+    return [discord.app_commands.Choice(name=item, value=item) for item in ["shrooms", "no_items"] if current.lower() in item.lower()][:25]
 
 async def test_autocomplete(interaction, current: str):
-    try:
-        return [discord.app_commands.Choice(name=vehicle, value=vehicle) for vehicle in MK8_VEHICLES if current.lower() in vehicle.lower()][:25]
-    except Exception as e:
-        print(f"Error in test_autocomplete: {e}")
-        return []
+    return [discord.app_commands.Choice(name=vehicle, value=vehicle) for vehicle in MK8_VEHICLES if current.lower() in vehicle.lower()][:25]
 
 async def cc_autocomplete(interaction, current: str):
-    try:
-        return [discord.app_commands.Choice(name=cc, value=cc) for cc in ["150cc", "200cc"] if current.lower() in cc.lower()][:25]
-    except Exception as e:
-        print(f"Error in cc_autocomplete: {e}")
-        return []
+    return [discord.app_commands.Choice(name=cc, value=cc) for cc in ["150cc", "200cc"] if current.lower() in cc.lower()][:25]
 
 def truncate_text(text, max_length):
     if not text:
@@ -214,7 +200,11 @@ async def generate_weekly_leaderboard(week_number, tracks):
     return embed
 
 # Bot setup
-bot = commands.Bot(command_prefix="!", intents=discord.Intents.default())
+intents = discord.Intents.default()
+# Remove privileged intents that require approval
+# intents.members = True  # Commented out - requires privileged intent
+# intents.guilds = True   # This is included in default intents
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 @tasks.loop(time=datetime.time(hour=12, minute=0))  # Sunday 12:00 PM
 async def start_weekly_trials():
@@ -266,7 +256,6 @@ async def setup_new_weekly_trials(target_guild=None):
         
         if target_channels:
             channel = target_channels[0]  # Use the first (should be only) match
-            print(f"📢 WEEKLY START: Posting to {guild.name} -> #{channel.name}")
             embed = discord.Embed(
                 title="🏁 New Weekly Time Trials!",
                 description=f"Week {week_number} trials are now active!",
@@ -276,8 +265,6 @@ async def setup_new_weekly_trials(target_guild=None):
             embed.add_field(name="Duration", value=f"{start_date} to {end_date}", inline=False)
             embed.add_field(name="How to Participate", value="Use `/add_time` with 150cc and shrooms for these tracks!", inline=False)
             await channel.send(embed=embed)
-        else:
-            print(f"❌ No time-trials-of-the-week channel in: {guild.name}")
 
 async def finish_weekly_trials(target_guild=None):
     """Finish current weekly trials and show leaderboard"""
@@ -303,11 +290,8 @@ async def finish_weekly_trials(target_guild=None):
             
             if target_channels:
                 channel = target_channels[0]  # Use the first (should be only) match
-                print(f"📊 WEEKLY END: Posting leaderboard to {guild.name} -> #{channel.name}")
                 embed = await generate_weekly_leaderboard(week_number, [track1, track2, track3])
                 await channel.send(embed=embed)
-            else:
-                print(f"❌ No time-trials-of-the-week channel in: {guild.name}")
     
     conn.close()
 
@@ -326,9 +310,6 @@ async def on_ready():
     try:
         synced = await bot.tree.sync()
         print(f"Synced {len(synced)} command(s)")
-        # Print command names for debugging
-        for cmd in synced:
-            print(f"  - {cmd.name}")
     except Exception as e:
         print(f"Failed to sync commands: {e}")
 
@@ -1180,12 +1161,8 @@ async def weekly_leaderboard(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 async def admin_action_autocomplete(interaction, current: str):
-    try:
-        actions = ["start_now", "end_now", "schedule"]
-        return [discord.app_commands.Choice(name=action, value=action) for action in actions if current.lower() in action.lower()][:25]
-    except Exception as e:
-        print(f"Error in admin_action_autocomplete: {e}")
-        return []
+    actions = ["start_now", "end_now", "schedule"]
+    return [discord.app_commands.Choice(name=action, value=action) for action in actions if current.lower() in action.lower()][:25]
 
 @bot.tree.command(name="weekly_admin", description="Admin commands for weekly trials")
 @discord.app_commands.autocomplete(action=admin_action_autocomplete)
@@ -1200,10 +1177,28 @@ async def weekly_admin(
     time_hour: int = 12,
     time_minute: int = 0
 ):
-    # Check if user has captain or coach role
-    user_roles = [role.name.lower() for role in interaction.user.roles]
-    if not any(role in user_roles for role in ['captain', 'coach']):
-        await interaction.response.send_message("❌ You need either the 'captain' or 'coach' role to use this command.", ephemeral=True)
+    # Check if user has captain or coach role (alternative method without Members Intent)
+    try:
+        # Try to get the member object from the guild
+        member = interaction.guild.get_member(interaction.user.id)
+        if member is None:
+            # Fallback: fetch member if not in cache
+            member = await interaction.guild.fetch_member(interaction.user.id)
+        
+        user_roles = [role.name.lower() for role in member.roles]
+        print(f"🔍 DEBUG: User {interaction.user} in {interaction.guild.name} has roles: {user_roles}")
+        print(f"🔍 DEBUG: User ID: {interaction.user.id}, Guild ID: {interaction.guild.id}")
+        
+        if not any(role in user_roles for role in ['captain', 'coach']):
+            await interaction.response.send_message(f"❌ You need either the 'captain' or 'coach' role to use this command.\n**Your current roles:** {', '.join([role.name for role in member.roles if role.name != '@everyone'])}", ephemeral=True)
+            return
+    except discord.Forbidden:
+        # Bot doesn't have permission to fetch member info
+        await interaction.response.send_message("❌ Bot doesn't have permission to check your roles. Please contact an administrator.", ephemeral=True)
+        return
+    except Exception as e:
+        print(f"❌ Error checking roles: {e}")
+        await interaction.response.send_message("❌ Unable to verify your roles. Please try again or contact an administrator.", ephemeral=True)
         return
     
     # Defer the response to avoid timeout
@@ -1228,20 +1223,6 @@ async def weekly_admin(
         await interaction.followup.send(
             "❌ Invalid action. Available actions: `start_now`, `end_now`, `schedule`"
         )
-
-@bot.tree.command(name="test_weekly", description="Test weekly trials posting (admin only)")
-async def test_weekly(interaction: discord.Interaction):
-    # Check if user has captain or coach role
-    user_roles = [role.name.lower() for role in interaction.user.roles]
-    if not any(role in user_roles for role in ['captain', 'coach']):
-        await interaction.response.send_message("❌ You need either the 'captain' or 'coach' role to use this command.", ephemeral=True)
-        return
-    
-    await interaction.response.defer(ephemeral=True)
-    
-    print(f"🧪 TEST: Manual weekly test triggered by {interaction.user} in {interaction.guild.name}")
-    await finish_weekly_trials(target_guild=interaction.guild)
-    await interaction.followup.send("✅ Test completed - check console and channels for output.")
 
 # Main block
 if __name__ == "__main__":
