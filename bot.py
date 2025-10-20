@@ -264,7 +264,18 @@ async def setup_new_weekly_trials(target_guild=None):
             embed.add_field(name="Featured Tracks", value=f"1. {tracks[0]}\n2. {tracks[1]}\n3. {tracks[2]}", inline=False)
             embed.add_field(name="Duration", value=f"{start_date} to {end_date}", inline=False)
             embed.add_field(name="How to Participate", value="Use `/add_time` with 150cc and shrooms for these tracks!", inline=False)
-            await channel.send(embed=embed)
+            
+            try:
+                await channel.send(embed=embed)
+                print(f"✅ Posted new weekly trials to {guild.name}#{channel.name}")
+            except discord.Forbidden:
+                print(f"❌ Missing permissions to send messages in {guild.name}#{channel.name}")
+            except discord.HTTPException as e:
+                print(f"❌ Failed to send message in {guild.name}#{channel.name}: {e}")
+            except Exception as e:
+                print(f"❌ Unexpected error sending message in {guild.name}#{channel.name}: {e}")
+        else:
+            print(f"ℹ️ No 'time-trials-of-the-week' channel found in {guild.name}")
 
 async def finish_weekly_trials(target_guild=None):
     """Finish current weekly trials and show leaderboard"""
@@ -291,7 +302,18 @@ async def finish_weekly_trials(target_guild=None):
             if target_channels:
                 channel = target_channels[0]  # Use the first (should be only) match
                 embed = await generate_weekly_leaderboard(week_number, [track1, track2, track3])
-                await channel.send(embed=embed)
+                
+                try:
+                    await channel.send(embed=embed)
+                    print(f"✅ Posted weekly leaderboard to {guild.name}#{channel.name}")
+                except discord.Forbidden:
+                    print(f"❌ Missing permissions to send messages in {guild.name}#{channel.name}")
+                except discord.HTTPException as e:
+                    print(f"❌ Failed to send leaderboard in {guild.name}#{channel.name}: {e}")
+                except Exception as e:
+                    print(f"❌ Unexpected error sending leaderboard in {guild.name}#{channel.name}: {e}")
+            else:
+                print(f"ℹ️ No 'time-trials-of-the-week' channel found in {guild.name}")
     
     conn.close()
 
@@ -1214,12 +1236,34 @@ async def weekly_admin(
     await interaction.response.defer(ephemeral=True)
     
     if action.lower() == "start_now":
-        await setup_new_weekly_trials(target_guild=interaction.guild)
-        await interaction.followup.send("✅ Started new weekly trials immediately.")
+        try:
+            await setup_new_weekly_trials(target_guild=interaction.guild)
+            await interaction.followup.send(
+                "✅ Started new weekly trials immediately.\n"
+                "ℹ️ Check the console for details about posting to channels."
+            )
+        except Exception as e:
+            print(f"❌ Error in setup_new_weekly_trials: {e}")
+            await interaction.followup.send(
+                f"⚠️ Trials were set up, but there may have been issues posting announcements.\n"
+                f"**Error:** {str(e)[:100]}...\n"
+                f"Please check bot permissions in the 'time-trials-of-the-week' channel."
+            )
     
     elif action.lower() == "end_now":
-        await finish_weekly_trials(target_guild=interaction.guild)
-        await interaction.followup.send("✅ Ended current weekly trials and showed results.")
+        try:
+            await finish_weekly_trials(target_guild=interaction.guild)
+            await interaction.followup.send(
+                "✅ Ended current weekly trials and showed results.\n"
+                "ℹ️ Check the console for details about posting leaderboards."
+            )
+        except Exception as e:
+            print(f"❌ Error in finish_weekly_trials: {e}")
+            await interaction.followup.send(
+                f"⚠️ Trials were ended, but there may have been issues posting results.\n"
+                f"**Error:** {str(e)[:100]}...\n"
+                f"Please check bot permissions in the 'time-trials-of-the-week' channel."
+            )
     
     elif action.lower() == "schedule":
         # Update task timing (would require restart to take effect)
@@ -1232,6 +1276,121 @@ async def weekly_admin(
         await interaction.followup.send(
             "❌ Invalid action. Available actions: `start_now`, `end_now`, `schedule`"
         )
+
+@bot.tree.command(name="check_permissions", description="Check bot permissions for weekly trials")
+async def check_permissions(interaction: discord.Interaction):
+    # Check if user has captain or coach role first
+    try:
+        member = interaction.guild.get_member(interaction.user.id)
+        if member is None:
+            member = await interaction.guild.fetch_member(interaction.user.id)
+        
+        user_roles = [role.name.lower() for role in member.roles]
+        
+        if not any(role in user_roles for role in ['captain', 'coach']):
+            await interaction.response.send_message(
+                "❌ You need either the 'captain' or 'coach' role to use this command.", 
+                ephemeral=True
+            )
+            return
+    except Exception as e:
+        await interaction.response.send_message(
+            f"❌ Error checking your roles: {e}", 
+            ephemeral=True
+        )
+        return
+
+    # Check for time-trials-of-the-week channel
+    target_channels = [ch for ch in interaction.guild.text_channels if ch.name.lower().strip() == 'time-trials-of-the-week']
+    
+    if not target_channels:
+        await interaction.response.send_message(
+            "❌ No 'time-trials-of-the-week' channel found in this server.\n"
+            "Please create this channel for weekly trials to work.",
+            ephemeral=True
+        )
+        return
+    
+    channel = target_channels[0]
+    
+    # Check bot permissions in that channel
+    bot_member = interaction.guild.get_member(bot.user.id)
+    permissions = channel.permissions_for(bot_member)
+    
+    embed = discord.Embed(
+        title="🔍 Bot Permissions Check",
+        description=f"Checking permissions for #{channel.name}",
+        color=0x3498db
+    )
+    
+    # Check required permissions
+    required_perms = {
+        "Send Messages": permissions.send_messages,
+        "Embed Links": permissions.embed_links,
+        "Read Messages": permissions.read_messages,
+        "Use Slash Commands": permissions.use_slash_commands,
+        "Read Message History": permissions.read_message_history
+    }
+    
+    all_good = True
+    perm_status = []
+    
+    for perm_name, has_perm in required_perms.items():
+        if has_perm:
+            perm_status.append(f"✅ {perm_name}")
+        else:
+            perm_status.append(f"❌ {perm_name}")
+            all_good = False
+    
+    embed.add_field(
+        name="Required Permissions",
+        value="\n".join(perm_status),
+        inline=False
+    )
+    
+    if all_good:
+        embed.add_field(
+            name="✅ Status",
+            value="All permissions are correct! Weekly trials should work.",
+            inline=False
+        )
+        embed.color = 0x00ff00
+    else:
+        embed.add_field(
+            name="❌ Action Required",
+            value=f"Please give the bot the missing permissions in #{channel.name}\n"
+                  "Go to Server Settings → Roles → Froog → Enable missing permissions",
+            inline=False
+        )
+        embed.color = 0xff0000
+    
+    # Test sending a message
+    try:
+        test_embed = discord.Embed(
+            title="🧪 Permission Test",
+            description="If you can see this, the bot can send messages!",
+            color=0x00ff00
+        )
+        await channel.send(embed=test_embed)
+        embed.add_field(
+            name="🧪 Send Test",
+            value="✅ Successfully sent test message",
+            inline=False
+        )
+    except discord.Forbidden:
+        embed.add_field(
+            name="🧪 Send Test",
+            value="❌ Failed to send test message - permission denied",
+            inline=False
+        )
+    except Exception as e:
+        embed.add_field(
+            name="🧪 Send Test",
+            value=f"❌ Failed to send test message: {str(e)[:100]}",
+            inline=False
+        )
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # Main block
 if __name__ == "__main__":
