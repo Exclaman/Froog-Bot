@@ -582,11 +582,21 @@ async def add_time(
     top_time = cursor.fetchone()
     
     ping_message = None
-    ping_debug = None
     
-    # If current user is now the top time holder, find who they beat
+    # If current user is now the top time holder, check if they just took over from someone else
     if top_time and top_time[0] == interaction.user.id:
-        # Get the second-best time (which would be the previous record holder)
+        # Check if the user was already the previous top holder by getting the second-best time from current user
+        cursor.execute('''
+            SELECT user_id, time_minutes, time_seconds, time_milliseconds 
+            FROM time_trials 
+            WHERE track_name = ? AND game_mode = ? AND items_setting = ?
+            AND user_id = ?
+            ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC
+            LIMIT 1, 1
+        ''', (track, mode, items, interaction.user.id))
+        user_second_best = cursor.fetchone()
+        
+        # Get the best time from other users
         cursor.execute('''
             SELECT user_id, time_minutes, time_seconds, time_milliseconds 
             FROM time_trials 
@@ -595,11 +605,30 @@ async def add_time(
             ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC
             LIMIT 1
         ''', (track, mode, items, interaction.user.id))
-        previous_holder = cursor.fetchone()
+        other_users_best = cursor.fetchone()
         
-        if previous_holder:
-            prev_user_id = previous_holder[0]
-            ping_message = f"🏁 <@{prev_user_id}> Your top time for {track} ({mode}, {items}) was just beaten!"
+        # Only ping if:
+        # 1. There is a best time from other users, AND
+        # 2. Either the user had no previous time, OR their previous best was slower than the other user's best
+        if other_users_best:
+            should_ping = False
+            
+            if user_second_best is None:
+                # User had no previous time, so they're taking over from someone else
+                should_ping = True
+            else:
+                # Compare user's previous best with other user's best
+                user_prev_ms = time_to_total_ms(user_second_best[1], user_second_best[2], user_second_best[3])
+                other_best_ms = time_to_total_ms(other_users_best[1], other_users_best[2], other_users_best[3])
+                
+                # Only ping if user's previous time was slower than the other user's best
+                # (meaning the other user was previously holding the record)
+                if user_prev_ms > other_best_ms:
+                    should_ping = True
+            
+            if should_ping:
+                prev_user_id = other_users_best[0]
+                ping_message = f"🏁 <@{prev_user_id}> Your top time for {track} ({mode}, {items}) was just beaten!"
     
     conn.close()
     
