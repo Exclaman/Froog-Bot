@@ -1161,79 +1161,123 @@ async def compare_wr_shrooms(interaction: discord.Interaction, cc: str = "150cc"
     items=items_autocomplete
 )
 async def leaderboard(interaction: discord.Interaction, mode: str, items: str):
-    conn = sqlite3.connect('mario_kart_times.db')
-    cursor = conn.cursor()
-    embed = discord.Embed(title=f"🏆 Leaderboard ({mode}, {items})", color=0x00bfff)
-    # Define cups and their track indices (same as list_tracks)
-    cups = [
-        ("Mushroom Cup", MK8_TRACKS[0:4]),
-        ("Flower Cup", MK8_TRACKS[4:8]),
-        ("Star Cup", MK8_TRACKS[8:12]),
-        ("Special Cup", MK8_TRACKS[12:16]),
-        ("Shell Cup", MK8_TRACKS[16:20]),
-        ("Banana Cup", MK8_TRACKS[20:24]),
-        ("Leaf Cup", MK8_TRACKS[24:28]),
-        ("Lightning Cup", MK8_TRACKS[28:32]),
-        ("Bell Cup", MK8_TRACKS[32:36]),
-        ("Egg Cup", MK8_TRACKS[36:40]),
-        ("Triforce Cup", MK8_TRACKS[40:44]),
-        ("Crossing Cup", MK8_TRACKS[44:48]),
-        ("Golden Dash Cup", MK8_TRACKS[48:52]),
-        ("Lucky Cat Cup", MK8_TRACKS[52:56]),
-        ("Turnip Cup", MK8_TRACKS[56:60]),
-        ("Propeller Cup", MK8_TRACKS[60:64]),
-        ("Rock Cup", MK8_TRACKS[64:68]),
-        ("Moon Cup", MK8_TRACKS[68:72]),
-        ("Fruit Cup", MK8_TRACKS[72:76]),
-        ("Boomerang Cup", MK8_TRACKS[76:80]),
-        ("Feather Cup", MK8_TRACKS[80:84]),
-        ("Cherry Cup", MK8_TRACKS[84:88]),
-        ("Acorn Cup", MK8_TRACKS[88:92]),
-        ("Spiny Cup", MK8_TRACKS[92:96])
-    ]
-    for cup_name, tracks in cups:
-        field_lines = []
-        for track in tracks:
-            cursor.execute('''
-                SELECT user_id, time_minutes, time_seconds, time_milliseconds, vehicle_setup
-                FROM time_trials
-                WHERE track_name = ? AND game_mode = ? AND items_setting = ?
-                ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC
-                LIMIT 1
-            ''', (track, mode, items))
-            result = cursor.fetchone()
-            if result:
-                user_id, mins, secs, ms, vehicle = result
+    # Validate mode
+    if mode not in GAME_MODES:
+        await interaction.response.send_message(f"❌ Invalid game mode. Choose from: {', '.join(GAME_MODES)}", ephemeral=True)
+        return
+    
+    # Validate items
+    if items not in ["shrooms", "no_items"]:
+        await interaction.response.send_message("❌ Invalid items setting. Choose `shrooms` or `no_items`.", ephemeral=True)
+        return
+    
+    # Defer response since this might take a while
+    await interaction.response.defer()
+    
+    try:
+        conn = sqlite3.connect('mario_kart_times.db')
+        cursor = conn.cursor()
+        embed = discord.Embed(title=f"🏆 Leaderboard ({mode}, {items})", color=0x00bfff)
+        
+        # Define cups and their track indices (same as list_tracks)
+        cups = [
+            ("Mushroom Cup", MK8_TRACKS[0:4]),
+            ("Flower Cup", MK8_TRACKS[4:8]),
+            ("Star Cup", MK8_TRACKS[8:12]),
+            ("Special Cup", MK8_TRACKS[12:16]),
+            ("Shell Cup", MK8_TRACKS[16:20]),
+            ("Banana Cup", MK8_TRACKS[20:24]),
+            ("Leaf Cup", MK8_TRACKS[24:28]),
+            ("Lightning Cup", MK8_TRACKS[28:32]),
+            ("Bell Cup", MK8_TRACKS[32:36]),
+            ("Egg Cup", MK8_TRACKS[36:40]),
+            ("Triforce Cup", MK8_TRACKS[40:44]),
+            ("Crossing Cup", MK8_TRACKS[44:48]),
+            ("Golden Dash Cup", MK8_TRACKS[48:52]),
+            ("Lucky Cat Cup", MK8_TRACKS[52:56]),
+            ("Turnip Cup", MK8_TRACKS[56:60]),
+            ("Propeller Cup", MK8_TRACKS[60:64]),
+            ("Rock Cup", MK8_TRACKS[64:68]),
+            ("Moon Cup", MK8_TRACKS[68:72]),
+            ("Fruit Cup", MK8_TRACKS[72:76]),
+            ("Boomerang Cup", MK8_TRACKS[76:80]),
+            ("Feather Cup", MK8_TRACKS[80:84]),
+            ("Cherry Cup", MK8_TRACKS[84:88]),
+            ("Acorn Cup", MK8_TRACKS[88:92]),
+            ("Spiny Cup", MK8_TRACKS[92:96])
+        ]
+        
+        # Single bulk query to get all best times at once - MUCH faster!
+        cursor.execute('''
+            SELECT track_name, user_id, time_minutes, time_seconds, time_milliseconds, vehicle_setup,
+                   ROW_NUMBER() OVER (PARTITION BY track_name ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC) as rank
+            FROM time_trials
+            WHERE game_mode = ? AND items_setting = ?
+        ''', (mode, items))
+        
+        all_results = cursor.fetchall()
+        
+        # Create a dictionary of track -> best time record for O(1) lookup
+        track_records = {}
+        for track_name, user_id, mins, secs, ms, vehicle, rank in all_results:
+            if rank == 1:  # Only keep the best time per track
+                track_records[track_name] = (user_id, mins, secs, ms, vehicle)
+        
+        # Cache user names to avoid repeated API calls
+        user_cache = {}
+        async def get_user_name(user_id):
+            if user_id not in user_cache:
                 try:
                     user = await bot.fetch_user(user_id)
-                    user_name = truncate_text(user.display_name, 20)  # Limit username length
+                    user_cache[user_id] = truncate_text(user.display_name, 20)
                 except Exception:
-                    user_name = f"User {user_id}"
-                formatted_time = format_time(mins, secs, ms)
-                vehicle_str = f" ({truncate_text(vehicle, 15)})" if vehicle else ""  # Limit vehicle length
-                
-                # Truncate track name if needed
-                track_display = truncate_text(track, 25)
-                line = f"{track_display}: {user_name} {formatted_time}{vehicle_str}"
-                
-                # Ensure individual line isn't too long
-                if len(line) > 80:
-                    line = f"{truncate_text(track, 20)}: {truncate_text(user_name, 15)} {formatted_time}"
-                
-                field_lines.append(line)
-            else:
-                field_lines.append(f"{truncate_text(track, 25)}: No record")
+                    user_cache[user_id] = f"User {user_id}"
+            return user_cache[user_id]
         
-        # Ensure field value doesn't exceed 1024 characters
-        field_value = "\n".join(field_lines)
-        if len(field_value) > 1000:
-            # If still too long, truncate the field
-            field_value = field_value[:997] + "..."
+        # Process cups using the cached data
+        for cup_name, tracks in cups:
+            field_lines = []
+            for track in tracks:
+                if track in track_records:
+                    user_id, mins, secs, ms, vehicle = track_records[track]
+                    user_name = await get_user_name(user_id)
+                    formatted_time = format_time(mins, secs, ms)
+                    vehicle_str = f" ({truncate_text(vehicle, 15)})" if vehicle else ""
+                    
+                    # Truncate track name if needed
+                    track_display = truncate_text(track, 25)
+                    line = f"{track_display}: {user_name} {formatted_time}{vehicle_str}"
+                    
+                    # Ensure individual line isn't too long
+                    if len(line) > 80:
+                        line = f"{truncate_text(track, 20)}: {truncate_text(user_name, 15)} {formatted_time}"
+                    
+                    field_lines.append(line)
+                else:
+                    field_lines.append(f"{truncate_text(track, 25)}: No record")
+            
+            # Ensure field value doesn't exceed 1024 characters
+            field_value = "\n".join(field_lines)
+            if len(field_value) > 1000:
+                # If still too long, truncate the field
+                field_value = field_value[:997] + "..."
+            
+            embed.add_field(name=cup_name, value=field_value, inline=False)
         
-        embed.add_field(name=cup_name, value=field_value, inline=False)
-    conn.close()
-    embed.set_footer(text="Each field is a cup. Only 25 cups/fields allowed per embed.")
-    await interaction.response.send_message(embed=embed)
+        conn.close()
+        embed.set_footer(text="Each field is a cup. Only 25 cups/fields allowed per embed.")
+        await interaction.followup.send(embed=embed)
+    
+    except Exception as e:
+        print(f"❌ Error in leaderboard command: {e}")
+        try:
+            conn.close()
+        except:
+            pass
+        await interaction.followup.send(
+            f"❌ An error occurred while generating the leaderboard: {str(e)[:100]}", 
+            ephemeral=True
+        )
 
 
 
