@@ -187,7 +187,8 @@ STREAK_ROLES = {
     4: "Trial Veteran", 
     8: "Trial Master",
     16: "Trial Legend",
-    32: "Trial Champion"
+    32: "Trial Champion",
+    52: "Trial Grandmaster"
 }
 
 async def award_streak_role(member, guild, current_streak):
@@ -211,7 +212,8 @@ async def award_streak_role(member, guild, current_streak):
                 "Trial Veteran": 0x4169E1,    # Royal Blue  
                 "Trial Master": 0x9932CC,     # Dark Orchid
                 "Trial Legend": 0xFF6347,     # Tomato
-                "Trial Champion": 0xFFD700    # Gold
+                "Trial Champion": 0xFFD700,   # Gold
+                "Trial Grandmaster": 0xFF1493 # Deep Pink
             }
             role = await guild.create_role(
                 name=earned_role_name,
@@ -1852,7 +1854,8 @@ async def streak_leaderboard(interaction: discord.Interaction):
                         "Trial Veteran": "🔵", 
                         "Trial Master": "🟣",
                         "Trial Legend": "🔴",
-                        "Trial Champion": "🏆"
+                        "Trial Champion": "🏆",
+                        "Trial Grandmaster": "💎"
                     }.get(role_name, "")
                     break
             
@@ -1885,7 +1888,8 @@ async def streak_roles(interaction: discord.Interaction):
             "Trial Veteran": "🔵", 
             "Trial Master": "🟣",
             "Trial Legend": "🔴",
-            "Trial Champion": "🏆"
+            "Trial Champion": "🏆",
+            "Trial Grandmaster": "💎"
         }.get(role_name, "⭐")
         
         roles_text += f"{emoji} **{role_name}**: {min_streak}+ weeks\n"
