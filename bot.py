@@ -526,39 +526,7 @@ async def add_time(
                         weekly_best_info = f"Weekly Best: {format_time(current_weekly_best[0], current_weekly_best[1], current_weekly_best[2])} (+{difference_seconds:.3f}s)"
                 else:
                     weekly_best_info = "🎉 First Weekly Submission for this track!"
-    # Find previous best before this new record
-    cursor.execute('''
-        SELECT user_id, time_minutes, time_seconds, time_milliseconds 
-        FROM time_trials 
-        WHERE track_name = ? AND game_mode = ? AND items_setting = ?
-        AND user_id != ?
-        ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC
-        LIMIT 1
-    ''', (track, mode, items, interaction.user.id))
-    previous_holder = cursor.fetchone()
-    ping_message = None
-    ping_debug = None
-    # Check if this is now the top time for this track/mode/items
-    cursor.execute('''
-        SELECT user_id, time_minutes, time_seconds, time_milliseconds 
-        FROM time_trials 
-        WHERE track_name = ? AND game_mode = ? AND items_setting = ?
-        ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC
-        LIMIT 1
-    ''', (track, mode, items))
-    top_time = cursor.fetchone()
-    if top_time:
-        top_user_id, top_mins, top_secs, top_ms = top_time
-        if top_user_id == interaction.user.id and previous_holder:
-            prev_user_id = previous_holder[0]
-            ping_message = f"🏁 <@{prev_user_id}> Your top time for {track} ({mode}, {items}) was just beaten!"
-            ping_debug = f"Ping should be sent to user_id: {prev_user_id}"
-        elif top_user_id == interaction.user.id:
-            ping_debug = "No previous holder found or previous holder is current user."
-        else:
-            ping_debug = "Current user does not hold top time."
-    else:
-        ping_debug = "No top_time found."
+    
     conn.close()
     
     formatted_time = format_time(minutes, seconds, milliseconds)
@@ -571,8 +539,43 @@ async def add_time(
         embed.add_field(name="Vehicle Setup", value=truncate_text(vehicle, 1000), inline=True)
     if notes:
         embed.add_field(name="Notes", value=truncate_text(notes, 1000), inline=False)
-    if ping_debug:
-        embed.add_field(name="Ping Debug", value=ping_debug, inline=False)
+    
+    # Check for ping AFTER inserting the new record
+    conn = sqlite3.connect('mario_kart_times.db')
+    cursor = conn.cursor()
+    
+    # Check if this new time is now the top time
+    cursor.execute('''
+        SELECT user_id, time_minutes, time_seconds, time_milliseconds 
+        FROM time_trials 
+        WHERE track_name = ? AND game_mode = ? AND items_setting = ?
+        ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC
+        LIMIT 1
+    ''', (track, mode, items))
+    top_time = cursor.fetchone()
+    
+    ping_message = None
+    ping_debug = None
+    
+    # If current user is now the top time holder, find who they beat
+    if top_time and top_time[0] == interaction.user.id:
+        # Get the second-best time (which would be the previous record holder)
+        cursor.execute('''
+            SELECT user_id, time_minutes, time_seconds, time_milliseconds 
+            FROM time_trials 
+            WHERE track_name = ? AND game_mode = ? AND items_setting = ?
+            AND user_id != ?
+            ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC
+            LIMIT 1
+        ''', (track, mode, items, interaction.user.id))
+        previous_holder = cursor.fetchone()
+        
+        if previous_holder:
+            prev_user_id = previous_holder[0]
+            ping_message = f"🏁 <@{prev_user_id}> Your top time for {track} ({mode}, {items}) was just beaten!"
+    
+    conn.close()
+    
     # Personal best check
     if current_best:
         current_total_ms = time_to_total_ms(current_best[0], current_best[1], current_best[2])
