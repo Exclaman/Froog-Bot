@@ -92,6 +92,150 @@ def format_time(mins, secs, ms):
 def time_to_total_ms(mins, secs, ms):
     return mins * 60000 + secs * 1000 + ms
 
+# Streak management functions
+async def update_user_streak(user_id, guild_id, week_number):
+    """Update user's weekly trial streak based on participation"""
+    conn = sqlite3.connect('mario_kart_times.db')
+    cursor = conn.cursor()
+    
+    # Get current streak data
+    cursor.execute('''
+        SELECT current_streak, best_streak, last_participation_week, total_weeks_participated
+        FROM weekly_streaks 
+        WHERE user_id = ? AND guild_id = ?
+    ''', (user_id, guild_id))
+    
+    streak_data = cursor.fetchone()
+    
+    if streak_data:
+        current_streak, best_streak, last_week, total_weeks = streak_data
+        
+        # Check if they participated last week (streak continues) or this is a new streak
+        if last_week == week_number - 1:
+            # Streak continues
+            current_streak += 1
+        elif last_week < week_number - 1:
+            # Streak broken, reset to 1
+            current_streak = 1
+        # If last_week == week_number, they already participated this week
+        
+        # Update best streak if needed
+        if current_streak > best_streak:
+            best_streak = current_streak
+        
+        total_weeks += 1
+        
+        # Update record
+        cursor.execute('''
+            UPDATE weekly_streaks 
+            SET current_streak = ?, best_streak = ?, last_participation_week = ?, 
+                total_weeks_participated = ?, date_updated = CURRENT_TIMESTAMP
+            WHERE user_id = ? AND guild_id = ?
+        ''', (current_streak, best_streak, week_number, total_weeks, user_id, guild_id))
+    else:
+        # First time participating, create new record
+        current_streak = 1
+        best_streak = 1
+        total_weeks = 1
+        
+        cursor.execute('''
+            INSERT INTO weekly_streaks 
+            (user_id, guild_id, current_streak, best_streak, last_participation_week, total_weeks_participated)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (user_id, guild_id, current_streak, best_streak, week_number, total_weeks))
+    
+    conn.commit()
+    conn.close()
+    
+    return current_streak, best_streak
+
+async def check_weekly_completion(user_id, week_number):
+    """Check if user completed all 3 tracks for the week"""
+    conn = sqlite3.connect('mario_kart_times.db')
+    cursor = conn.cursor()
+    
+    # Get the 3 tracks for this week
+    cursor.execute('''
+        SELECT track1, track2, track3 
+        FROM weekly_trials 
+        WHERE week_number = ?
+    ''', (week_number,))
+    
+    trial_data = cursor.fetchone()
+    if not trial_data:
+        conn.close()
+        return False, []
+    
+    required_tracks = [trial_data[0], trial_data[1], trial_data[2]]
+    
+    # Check which tracks the user has submitted for
+    cursor.execute('''
+        SELECT DISTINCT track_name 
+        FROM weekly_submissions 
+        WHERE user_id = ? AND week_number = ?
+    ''', (user_id, week_number))
+    
+    submitted_tracks = [row[0] for row in cursor.fetchall()]
+    conn.close()
+    
+    completed_all = all(track in submitted_tracks for track in required_tracks)
+    return completed_all, submitted_tracks
+
+# Streak role management
+STREAK_ROLES = {
+    2: "Trial Cadet",
+    4: "Trial Veteran", 
+    8: "Trial Master",
+    16: "Trial Legend",
+    32: "Trial Champion"
+}
+
+async def award_streak_role(member, guild, current_streak):
+    """Award appropriate role based on current streak"""
+    # Find the highest role they've earned
+    earned_role_name = None
+    for min_streak, role_name in STREAK_ROLES.items():
+        if current_streak >= min_streak:
+            earned_role_name = role_name
+    
+    if not earned_role_name:
+        return None
+    
+    # Try to find or create the role
+    role = discord.utils.get(guild.roles, name=earned_role_name)
+    if not role:
+        try:
+            # Create the role with a nice color
+            colors = {
+                "Trial Cadet": 0x90EE90,      # Light Green
+                "Trial Veteran": 0x4169E1,    # Royal Blue  
+                "Trial Master": 0x9932CC,     # Dark Orchid
+                "Trial Legend": 0xFF6347,     # Tomato
+                "Trial Champion": 0xFFD700    # Gold
+            }
+            role = await guild.create_role(
+                name=earned_role_name,
+                color=discord.Color(colors.get(earned_role_name, 0x99AAB5)),
+                reason="Weekly trials streak achievement"
+            )
+        except discord.Forbidden:
+            print(f"❌ No permission to create role {earned_role_name} in {guild.name}")
+            return None
+    
+    # Add the role if they don't have it
+    if role not in member.roles:
+        try:
+            await member.add_roles(role, reason=f"Achieved {current_streak} week trial streak")
+            return role
+        except discord.Forbidden:
+            print(f"❌ No permission to add role {earned_role_name} to {member.display_name}")
+            return None
+    
+    return None  # Already has the role
+
+def time_to_total_ms(mins, secs, ms):
+    return mins * 60000 + secs * 1000 + ms
+
 def init_database():
     conn = sqlite3.connect('mario_kart_times.db')
     cursor = conn.cursor()
@@ -141,6 +285,21 @@ def init_database():
             notes TEXT,
             date_recorded TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (week_number) REFERENCES weekly_trials(week_number)
+        )
+    ''')
+    
+    # Weekly trial streaks table
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS weekly_streaks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            guild_id INTEGER,
+            current_streak INTEGER DEFAULT 0,
+            best_streak INTEGER DEFAULT 0,
+            last_participation_week INTEGER DEFAULT 0,
+            total_weeks_participated INTEGER DEFAULT 0,
+            date_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, guild_id)
         )
     ''')
     
@@ -537,6 +696,27 @@ async def add_time(
                 conn.commit()
                 
                 weekly_submission_made = True
+                
+                # Check for streak progression and role rewards
+                try:
+                    completed_all, submitted_tracks = await check_weekly_completion(interaction.user.id, week_number)
+                    if completed_all:
+                        # User completed all 3 tracks - update streak!
+                        current_streak, best_streak = await update_user_streak(interaction.user.id, interaction.guild.id, week_number)
+                        
+                        # Try to award streak role
+                        member = interaction.guild.get_member(interaction.user.id)
+                        if member:
+                            awarded_role = await award_streak_role(member, interaction.guild, current_streak)
+                            if awarded_role:
+                                weekly_best_info += f"\n🏆 **{awarded_role.name}** role awarded for {current_streak} week streak!"
+                            elif current_streak > 1:
+                                weekly_best_info += f"\n🔥 Trial streak: {current_streak} weeks!"
+                        else:
+                            if current_streak > 1:
+                                weekly_best_info += f"\n🔥 Trial streak: {current_streak} weeks!"
+                except Exception as e:
+                    print(f"❌ Error updating streak for {interaction.user}: {e}")
                 
                 # Check if this is a weekly personal best
                 if current_weekly_best:
@@ -1554,6 +1734,172 @@ async def check_permissions(interaction: discord.Interaction):
         )
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="my_streak", description="View your weekly trials streak information")
+async def my_streak(interaction: discord.Interaction):
+    conn = sqlite3.connect('mario_kart_times.db')
+    cursor = conn.cursor()
+    
+    # Get user's streak data
+    cursor.execute('''
+        SELECT current_streak, best_streak, total_weeks_participated, last_participation_week
+        FROM weekly_streaks 
+        WHERE user_id = ? AND guild_id = ?
+    ''', (interaction.user.id, interaction.guild.id))
+    
+    streak_data = cursor.fetchone()
+    
+    # Get current week for context
+    current_week = get_current_week()
+    
+    if not streak_data:
+        embed = discord.Embed(
+            title="🔥 Your Trial Streak",
+            description="You haven't participated in weekly trials yet!",
+            color=0x95a5a6
+        )
+        embed.add_field(name="Get Started", value="Complete all 3 tracks in a weekly trial to start your streak!", inline=False)
+    else:
+        current_streak, best_streak, total_weeks, last_week = streak_data
+        
+        # Check if they've participated this week
+        completed_this_week, submitted_tracks = await check_weekly_completion(interaction.user.id, current_week)
+        
+        embed = discord.Embed(
+            title="🔥 Your Trial Streak",
+            color=0xe74c3c if current_streak >= 8 else 0xf39c12 if current_streak >= 4 else 0x2ecc71
+        )
+        
+        embed.add_field(name="Current Streak", value=f"🔥 **{current_streak}** weeks", inline=True)
+        embed.add_field(name="Best Streak", value=f"🏆 **{best_streak}** weeks", inline=True)
+        embed.add_field(name="Total Participation", value=f"📊 **{total_weeks}** weeks", inline=True)
+        
+        # Current week status
+        if completed_this_week:
+            embed.add_field(name="This Week", value="✅ **Completed all 3 tracks!**", inline=False)
+        else:
+            if submitted_tracks:
+                embed.add_field(name="This Week", value=f"🔄 **In Progress** ({len(submitted_tracks)}/3 tracks)", inline=False)
+            else:
+                embed.add_field(name="This Week", value="❌ **Not started**", inline=False)
+        
+        # Show next role milestone
+        next_milestone = None
+        for min_streak, role_name in STREAK_ROLES.items():
+            if current_streak < min_streak:
+                next_milestone = (min_streak, role_name)
+                break
+        
+        if next_milestone:
+            weeks_needed = next_milestone[0] - current_streak
+            embed.add_field(
+                name="Next Milestone", 
+                value=f"🎯 **{next_milestone[1]}** role\n({weeks_needed} more weeks needed)",
+                inline=False
+            )
+        else:
+            embed.add_field(name="Achievement", value="🏆 **Trial Champion** - Maximum rank achieved!", inline=False)
+    
+    conn.close()
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="streak_leaderboard", description="View the top trial streaks in this server")
+async def streak_leaderboard(interaction: discord.Interaction):
+    conn = sqlite3.connect('mario_kart_times.db')
+    cursor = conn.cursor()
+    
+    # Get top current streaks
+    cursor.execute('''
+        SELECT user_id, current_streak, best_streak, total_weeks_participated
+        FROM weekly_streaks 
+        WHERE guild_id = ? 
+        ORDER BY current_streak DESC, best_streak DESC
+        LIMIT 10
+    ''', (interaction.guild.id,))
+    
+    streak_data = cursor.fetchall()
+    conn.close()
+    
+    if not streak_data:
+        embed = discord.Embed(
+            title="🏆 Trial Streak Leaderboard",
+            description="No one has participated in weekly trials yet!",
+            color=0x95a5a6
+        )
+    else:
+        embed = discord.Embed(
+            title="🏆 Trial Streak Leaderboard",
+            description="Top current streaks in this server",
+            color=0xffd700
+        )
+        
+        leaderboard_text = ""
+        for i, (user_id, current_streak, best_streak, total_weeks) in enumerate(streak_data, 1):
+            try:
+                user = await bot.fetch_user(user_id)
+                username = user.display_name
+            except:
+                username = f"User {user_id}"
+            
+            medal = ["🥇", "🥈", "🥉"][i-1] if i <= 3 else f"{i}."
+            
+            # Add streak role emoji if they have one
+            role_emoji = ""
+            for min_streak, role_name in reversed(STREAK_ROLES.items()):
+                if current_streak >= min_streak:
+                    role_emoji = {
+                        "Trial Cadet": "🟢",
+                        "Trial Veteran": "🔵", 
+                        "Trial Master": "🟣",
+                        "Trial Legend": "🔴",
+                        "Trial Champion": "🏆"
+                    }.get(role_name, "")
+                    break
+            
+            leaderboard_text += f"{medal} {role_emoji} **{username}**: {current_streak} weeks (Best: {best_streak})\n"
+        
+        embed.add_field(name="Current Streaks", value=leaderboard_text or "None", inline=False)
+        embed.set_footer(text="Complete all 3 weekly tracks to build your streak!")
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="streak_roles", description="View information about trial streak roles")
+async def streak_roles(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="🏆 Trial Streak Roles",
+        description="Earn special roles by maintaining weekly trial streaks!",
+        color=0x9b59b6
+    )
+    
+    embed.add_field(
+        name="How It Works",
+        value="Complete **all 3 tracks** each week to maintain your streak.\n"
+              "Missing a week resets your streak to 0.",
+        inline=False
+    )
+    
+    roles_text = ""
+    for min_streak, role_name in STREAK_ROLES.items():
+        emoji = {
+            "Trial Cadet": "🟢",
+            "Trial Veteran": "🔵", 
+            "Trial Master": "🟣",
+            "Trial Legend": "🔴",
+            "Trial Champion": "🏆"
+        }.get(role_name, "⭐")
+        
+        roles_text += f"{emoji} **{role_name}**: {min_streak}+ weeks\n"
+    
+    embed.add_field(name="Available Roles", value=roles_text, inline=False)
+    embed.add_field(
+        name="Tips", 
+        value="• Use `/my_streak` to check your progress\n"
+              "• Submit times for all 3 tracks each week\n"
+              "• Roles are automatically awarded when earned",
+        inline=False
+    )
+    
+    await interaction.response.send_message(embed=embed)
 
 # Main block
 if __name__ == "__main__":
