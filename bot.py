@@ -176,22 +176,29 @@ async def generate_weekly_leaderboard(week_number, tracks):
                 formatted_time = format_time(mins, secs, ms)
                 try:
                     user = await bot.fetch_user(user_id)
-                    username = user.display_name
+                    username = truncate_text(user.display_name, 20)  # Limit username length
                 except:
                     username = f"User {user_id}"
                 
                 medal = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"][j-1]
-                vehicle_str = f" ({vehicle})" if vehicle else ""
-                leaderboard_text += f"{medal} {username}: {formatted_time}{vehicle_str}\n"
+                vehicle_str = f" ({truncate_text(vehicle, 15)})" if vehicle else ""  # Limit vehicle length
+                line = f"{medal} {username}: {formatted_time}{vehicle_str}\n"
+                
+                # Check if adding this line would exceed limit
+                if len(leaderboard_text + line) > 900:  # Leave buffer
+                    leaderboard_text += "... (truncated)"
+                    break
+                
+                leaderboard_text += line
             
             embed.add_field(
-                name=f"{i}. {track}",
-                value=leaderboard_text,
+                name=f"{i}. {truncate_text(track, 30)}",  # Limit track name in title
+                value=leaderboard_text.rstrip("\n") or "No submissions",
                 inline=False
             )
         else:
             embed.add_field(
-                name=f"{i}. {track}",
+                name=f"{i}. {truncate_text(track, 30)}",
                 value="No submissions",
                 inline=False
             )
@@ -415,9 +422,29 @@ async def compare_wr_itemless(interaction: discord.Interaction):
     embed = discord.Embed(title="⏱️ Your Shroomless Times vs World Records", color=0x1abc9c)
     for group, entries in buckets.items():
         if entries:
-            embed.add_field(name=group, value="\n".join(entries), inline=False)
+            # Limit entries and ensure field value doesn't exceed 1024 characters
+            field_value = ""
+            shown_entries = 0
+            max_entries_per_field = 15  # Reasonable limit to prevent overflow
+            
+            for entry in entries[:max_entries_per_field]:
+                new_line = entry + "\n"
+                if len(field_value + new_line) > 1000:  # Leave buffer for potential "..." 
+                    break
+                field_value += new_line
+                shown_entries += 1
+            
+            # Remove trailing newline
+            field_value = field_value.rstrip("\n")
+            
+            # Add truncation indicator if needed
+            if shown_entries < len(entries):
+                remaining = len(entries) - shown_entries
+                field_value += f"\n... and {remaining} more"
+            
+            embed.add_field(name=f"{group} ({len(entries)})", value=field_value or "None", inline=False)
         else:
-            embed.add_field(name=group, value="None", inline=False)
+            embed.add_field(name=f"{group} (0)", value="None", inline=False)
 
     embed.set_footer(text="World records: Shroomless/Itemless only. Times shown are your PBs for each track.")
     await interaction.response.send_message(embed=embed)
@@ -640,7 +667,12 @@ async def view_times(interaction: discord.Interaction, track: str, mode: str = N
         title=f"📜 Times for {track}" + (f" ({mode}, {items})" if mode and items else " (All Categories)"),
         color=0x3498db
     )
-    for idx, (mins, secs, ms, vehicle, date_recorded, notes, rec_mode, rec_items) in enumerate(results, 1):
+    
+    # Limit the number of entries to prevent overflow
+    max_entries = 20  # Reasonable limit
+    total_results = len(results)
+    
+    for idx, (mins, secs, ms, vehicle, date_recorded, notes, rec_mode, rec_items) in enumerate(results[:max_entries], 1):
         formatted_time = format_time(mins, secs, ms)
         field_value = f"⏱ {formatted_time} | 🗓 {date_recorded.split()[0]} | 🏷 {rec_mode}, {rec_items}"
         if vehicle:
@@ -648,6 +680,11 @@ async def view_times(interaction: discord.Interaction, track: str, mode: str = N
         if notes:
             field_value += f" | 📝 {truncate_text(notes, 50)}"
         embed.add_field(name=f"{idx}.", value=field_value, inline=False)
+    
+    # Add footer if results were truncated
+    if total_results > max_entries:
+        embed.set_footer(text=f"Showing {max_entries} of {total_results} times. Use filters to see specific times.")
+    
     await interaction.response.send_message(embed=embed)
 
 
@@ -978,7 +1015,21 @@ async def stats(
     else:
         embed.add_field(name="Most Played Track", value="N/A", inline=True)
     if recent_runs:
-        recent_str = "\n".join([f"{r[0]}: {format_time(r[1], r[2], r[3])} ({r[4].split()[0]})" for r in recent_runs])
+        # Ensure recent runs field doesn't exceed limit
+        recent_lines = []
+        for r in recent_runs:
+            line = f"{r[0]}: {format_time(r[1], r[2], r[3])} ({r[4].split()[0]})"
+            # Truncate track name if too long
+            if len(line) > 100:
+                track_name = truncate_text(r[0], 30)
+                line = f"{track_name}: {format_time(r[1], r[2], r[3])} ({r[4].split()[0]})"
+            recent_lines.append(line)
+        
+        recent_str = "\n".join(recent_lines)
+        # Ensure total field value is under 1024 characters
+        if len(recent_str) > 1000:
+            recent_str = recent_str[:997] + "..."
+        
         embed.add_field(name="Recent Runs", value=recent_str, inline=False)
     else:
         embed.add_field(name="Recent Runs", value="N/A", inline=False)
@@ -1048,9 +1099,29 @@ async def compare_wr_shrooms(interaction: discord.Interaction, cc: str = "150cc"
     embed = discord.Embed(title=f"⏱️ Your Shrooms Times vs World Records ({cc})", color=0x3498db)
     for group, entries in buckets.items():
         if entries:
-            embed.add_field(name=group, value="\n".join(entries), inline=False)
+            # Limit entries and ensure field value doesn't exceed 1024 characters
+            field_value = ""
+            shown_entries = 0
+            max_entries_per_field = 15  # Reasonable limit to prevent overflow
+            
+            for entry in entries[:max_entries_per_field]:
+                new_line = entry + "\n"
+                if len(field_value + new_line) > 1000:  # Leave buffer for potential "..." 
+                    break
+                field_value += new_line
+                shown_entries += 1
+            
+            # Remove trailing newline
+            field_value = field_value.rstrip("\n")
+            
+            # Add truncation indicator if needed
+            if shown_entries < len(entries):
+                remaining = len(entries) - shown_entries
+                field_value += f"\n... and {remaining} more"
+            
+            embed.add_field(name=f"{group} ({len(entries)})", value=field_value or "None", inline=False)
         else:
-            embed.add_field(name=group, value="None", inline=False)
+            embed.add_field(name=f"{group} (0)", value="None", inline=False)
 
     embed.set_footer(text="World records: Shrooms only. Times shown are your PBs for each track.")
     await interaction.response.send_message(embed=embed)
@@ -1106,15 +1177,31 @@ async def leaderboard(interaction: discord.Interaction, mode: str, items: str):
                 user_id, mins, secs, ms, vehicle = result
                 try:
                     user = await bot.fetch_user(user_id)
-                    user_name = user.display_name
+                    user_name = truncate_text(user.display_name, 20)  # Limit username length
                 except Exception:
                     user_name = f"User {user_id}"
                 formatted_time = format_time(mins, secs, ms)
-                vehicle_str = f" ({vehicle})" if vehicle else ""
-                field_lines.append(f"{track}: {user_name} {formatted_time}{vehicle_str}")
+                vehicle_str = f" ({truncate_text(vehicle, 15)})" if vehicle else ""  # Limit vehicle length
+                
+                # Truncate track name if needed
+                track_display = truncate_text(track, 25)
+                line = f"{track_display}: {user_name} {formatted_time}{vehicle_str}"
+                
+                # Ensure individual line isn't too long
+                if len(line) > 80:
+                    line = f"{truncate_text(track, 20)}: {truncate_text(user_name, 15)} {formatted_time}"
+                
+                field_lines.append(line)
             else:
-                field_lines.append(f"{track}: No record")
-        embed.add_field(name=cup_name, value="\n".join(field_lines), inline=False)
+                field_lines.append(f"{truncate_text(track, 25)}: No record")
+        
+        # Ensure field value doesn't exceed 1024 characters
+        field_value = "\n".join(field_lines)
+        if len(field_value) > 1000:
+            # If still too long, truncate the field
+            field_value = field_value[:997] + "..."
+        
+        embed.add_field(name=cup_name, value=field_value, inline=False)
     conn.close()
     embed.set_footer(text="Each field is a cup. Only 25 cups/fields allowed per embed.")
     await interaction.response.send_message(embed=embed)
