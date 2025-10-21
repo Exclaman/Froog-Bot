@@ -1537,13 +1537,13 @@ async def weekly_leaderboard(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 async def admin_action_autocomplete(interaction, current: str):
-    actions = ["start_now", "end_now", "schedule"]
+    actions = ["start_now", "end_now", "schedule_start", "schedule_end"]
     return [discord.app_commands.Choice(name=action, value=action) for action in actions if current.lower() in action.lower()][:25]
 
 @bot.tree.command(name="weekly_admin", description="Admin commands for weekly trials")
 @discord.app_commands.autocomplete(action=admin_action_autocomplete)
 @discord.app_commands.describe(
-    action="Action to perform",
+    action="Action to perform: start_now, end_now, schedule_start, schedule_end",
     time_hour="Hour for scheduling (0-23)",
     time_minute="Minute for scheduling (0-59)"
 )
@@ -1610,16 +1610,48 @@ async def weekly_admin(
                 f"Please check bot permissions in the 'time-trials-of-the-week' channel."
             )
     
-    elif action.lower() == "schedule":
-        # Update task timing (would require restart to take effect)
-        await interaction.followup.send(
-            f"⚠️ Schedule change requested to {time_hour:02d}:{time_minute:02d}. "
-            "Bot restart required for time changes to take effect."
-        )
+    elif action.lower() == "schedule_start":
+        # Validate time
+        if not (0 <= time_hour <= 23) or not (0 <= time_minute <= 59):
+            await interaction.followup.send("❌ Invalid time. Hour must be 0-23, minute must be 0-59.")
+            return
+        
+        # Update start task timing
+        try:
+            start_weekly_trials.change_interval(time=datetime.time(hour=time_hour, minute=time_minute))
+            await interaction.followup.send(
+                f"✅ Weekly trials **start** time updated to {time_hour:02d}:{time_minute:02d} (Sunday).\n"
+                "New schedule is active immediately!"
+            )
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error updating start schedule: {e}")
+    
+    elif action.lower() == "schedule_end":
+        # Validate time
+        if not (0 <= time_hour <= 23) or not (0 <= time_minute <= 59):
+            await interaction.followup.send("❌ Invalid time. Hour must be 0-23, minute must be 0-59.")
+            return
+        
+        # Update end task timing
+        try:
+            end_weekly_trials.change_interval(time=datetime.time(hour=time_hour, minute=time_minute))
+            await interaction.followup.send(
+                f"✅ Weekly trials **end** time updated to {time_hour:02d}:{time_minute:02d} (Saturday).\n"
+                "New schedule is active immediately!"
+            )
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error updating end schedule: {e}")
     
     else:
         await interaction.followup.send(
-            "❌ Invalid action. Available actions: `start_now`, `end_now`, `schedule`"
+            "❌ Invalid action. Available actions:\n"
+            "• `start_now` - Start new trials immediately\n"
+            "• `end_now` - End current trials immediately\n"
+            "• `schedule_start` - Set weekly start time (Sundays)\n"
+            "• `schedule_end` - Set weekly end time (Saturdays)\n\n"
+            f"**Current Schedule:**\n"
+            f"Start: Sundays at {start_weekly_trials.time.strftime('%H:%M')}\n"
+            f"End: Saturdays at {end_weekly_trials.time.strftime('%H:%M')}"
         )
 
 @bot.tree.command(name="check_permissions", description="Check bot permissions for weekly trials")
@@ -1673,7 +1705,7 @@ async def check_permissions(interaction: discord.Interaction):
         "Send Messages": permissions.send_messages,
         "Embed Links": permissions.embed_links,
         "Read Messages": permissions.read_messages,
-        "Use Slash Commands": permissions.use_slash_commands,
+        "Use Application Commands": permissions.use_application_commands,
         "Read Message History": permissions.read_message_history
     }
     
@@ -1863,6 +1895,54 @@ async def streak_leaderboard(interaction: discord.Interaction):
         
         embed.add_field(name="Current Streaks", value=leaderboard_text or "None", inline=False)
         embed.set_footer(text="Complete all 3 weekly tracks to build your streak!")
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="schedule", description="View the current weekly trials schedule")
+async def schedule(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="📅 Weekly Trials Schedule",
+        description="Current automated schedule for weekly trials",
+        color=0x3498db
+    )
+    
+    # Get current schedule times
+    start_time = start_weekly_trials.time.strftime('%H:%M')
+    end_time = end_weekly_trials.time.strftime('%H:%M')
+    
+    embed.add_field(
+        name="🟢 Trials Start",
+        value=f"**Sundays** at {start_time}",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="🔴 Trials End",
+        value=f"**Saturdays** at {end_time}",
+        inline=True
+    )
+    
+    embed.add_field(
+        name="ℹ️ Info",
+        value="Times are in the bot's server timezone.\n"
+              "Trials run for exactly one week (Sunday to Saturday).",
+        inline=False
+    )
+    
+    # Check if there are current active trials
+    conn = sqlite3.connect('mario_kart_times.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT week_number, start_date, end_date FROM weekly_trials WHERE is_active = 1')
+    current_trial = cursor.fetchone()
+    conn.close()
+    
+    if current_trial:
+        week_num, start_date, end_date = current_trial
+        embed.add_field(
+            name="📊 Current Trials",
+            value=f"Week {week_num}: {start_date} to {end_date}",
+            inline=False
+        )
     
     await interaction.response.send_message(embed=embed)
 
