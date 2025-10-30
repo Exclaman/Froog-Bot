@@ -434,21 +434,7 @@ def init_database():
         )
     ''')
     
-    # Hall of Fame tables for MVP tracking and legacy records
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS monthly_mvps (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            guild_id INTEGER,
-            month TEXT,
-            year INTEGER,
-            category TEXT,
-            achievement_description TEXT,
-            stats_snapshot TEXT,
-            date_awarded TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
+    # Hall of Fame tables for legacy records and achievements
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS record_holders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2262,32 +2248,6 @@ async def hall_of_fame(interaction: discord.Interaction):
                 inline=False
             )
         
-        # Recent MVPs
-        cursor.execute('''
-            SELECT user_id, category, achievement_description, month, year
-            FROM monthly_mvps 
-            WHERE guild_id = ?
-            ORDER BY year DESC, month DESC
-            LIMIT 3
-        ''', (interaction.guild.id,))
-        
-        recent_mvps = cursor.fetchall()
-        
-        if recent_mvps:
-            mvp_lines = []
-            for user_id, category, achievement, month, year in recent_mvps:
-                try:
-                    user = await bot.fetch_user(user_id)
-                    mvp_lines.append(f"**{user.display_name}** - {category}\n{achievement} ({month} {year})")
-                except:
-                    mvp_lines.append(f"User {user_id} - {category}\n{achievement} ({month} {year})")
-            
-            embed.add_field(
-                name="🌟 Recent MVPs",
-                value="\n\n".join(mvp_lines),
-                inline=False
-            )
-        
         embed.set_footer(text="Use /my_achievements to see your personal milestones!")
         conn.close()
         
@@ -2367,32 +2327,10 @@ async def my_achievements(interaction: discord.Interaction):
                 inline=False
             )
         
-        # MVP awards
-        cursor.execute('''
-            SELECT category, achievement_description, month, year
-            FROM monthly_mvps 
-            WHERE user_id = ? AND guild_id = ?
-            ORDER BY year DESC, month DESC
-        ''', (interaction.user.id, interaction.guild.id))
-        
-        mvp_awards = cursor.fetchall()
-        
-        if mvp_awards:
-            mvp_lines = []
-            for category, achievement, month, year in mvp_awards[:3]:
-                mvp_lines.append(f"🌟 **{category}** - {month} {year}\n{achievement}")
-            
-            embed.add_field(
-                name="🏆 MVP Awards",
-                value="\n\n".join(mvp_lines),
-                inline=False
-            )
-        
         # Stats summary
         stats_text = f"**Records Held:** {total_records or 0} (Total: {total_days or 0} days)\n"
         stats_text += f"**Current Records:** {len(current_records)}\n"
-        stats_text += f"**Milestones:** {len(milestones)}\n"
-        stats_text += f"**MVP Awards:** {len(mvp_awards)}"
+        stats_text += f"**Milestones:** {len(milestones)}"
         
         embed.add_field(
             name="📊 Legacy Summary",
@@ -2435,97 +2373,6 @@ async def my_achievements(interaction: discord.Interaction):
     except Exception as e:
         print(f"❌ Achievements error: {e}")
         await interaction.followup.send(f"❌ Error loading achievements: {str(e)[:200]}")
-
-@bot.tree.command(name="award_mvp", description="Award monthly MVP to a user (Admin only)")
-@discord.app_commands.describe(
-    user="User to award MVP to",
-    category="MVP category (Most Improved, Most Active, etc.)",
-    achievement="Description of their achievement"
-)
-async def award_mvp(interaction: discord.Interaction, user: discord.User, category: str, achievement: str):
-    # Check admin permissions
-    try:
-        member = interaction.guild.get_member(interaction.user.id)
-        if member is None:
-            member = await interaction.guild.fetch_member(interaction.user.id)
-        
-        user_roles = [role.name.lower() for role in member.roles]
-        is_admin = (any(role in user_roles for role in ['captain', 'coach']) or 
-                   member.guild_permissions.administrator)
-        
-        if not is_admin:
-            await interaction.response.send_message(
-                "❌ This command requires captain/coach role or administrator permissions.", 
-                ephemeral=True
-            )
-            return
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Error checking permissions: {e}", ephemeral=True)
-        return
-
-    # Get current month/year
-    now = datetime.datetime.now()
-    month = now.strftime("%B")
-    year = now.year
-    
-    conn = sqlite3.connect('mario_kart_times.db')
-    cursor = conn.cursor()
-    
-    # Check if user already has MVP for this month/category
-    cursor.execute('''
-        SELECT id FROM monthly_mvps 
-        WHERE user_id = ? AND guild_id = ? AND month = ? AND year = ? AND category = ?
-    ''', (user.id, interaction.guild.id, month, year, category))
-    
-    if cursor.fetchone():
-        await interaction.response.send_message(
-            f"❌ {user.display_name} already has the **{category}** MVP award for {month} {year}.", 
-            ephemeral=True
-        )
-        conn.close()
-        return
-    
-    # Get user stats for snapshot
-    cursor.execute('SELECT COUNT(*) FROM time_trials WHERE user_id = ?', (user.id,))
-    total_submissions = cursor.fetchone()[0]
-    
-    cursor.execute('SELECT COUNT(DISTINCT track_name) FROM time_trials WHERE user_id = ?', (user.id,))
-    unique_tracks = cursor.fetchone()[0]
-    
-    stats_snapshot = f"Total submissions: {total_submissions}, Unique tracks: {unique_tracks}"
-    
-    # Award MVP
-    cursor.execute('''
-        INSERT INTO monthly_mvps (user_id, guild_id, month, year, category, achievement_description, stats_snapshot)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    ''', (user.id, interaction.guild.id, month, year, category, achievement, stats_snapshot))
-    
-    conn.commit()
-    conn.close()
-    
-    # Create celebration embed
-    embed = discord.Embed(
-        title="🏆 MVP Award Ceremony!",
-        description=f"**{user.display_name}** has been awarded **{category}** MVP for {month} {year}!",
-        color=0xffd700
-    )
-    
-    embed.add_field(
-        name="🌟 Achievement",
-        value=achievement,
-        inline=False
-    )
-    
-    embed.add_field(
-        name="📊 Stats Snapshot",
-        value=stats_snapshot,
-        inline=False
-    )
-    
-    embed.set_thumbnail(url=user.display_avatar.url)
-    embed.set_footer(text=f"Awarded by {interaction.user.display_name}")
-    
-    await interaction.response.send_message(f"🎉 Congratulations {user.mention}!", embed=embed)
 
 # Main block
 if __name__ == "__main__":
