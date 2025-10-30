@@ -29,15 +29,61 @@ def select_weekly_tracks(week_number):
     tour_tracks = get_tour_tracks()
     non_tour_tracks = get_non_tour_tracks()
     
-    # Every other week (odd week numbers) should include a tour track
-    if week_number % 2 == 1:
-        # Include 1 tour track and 2 regular tracks
+    # Get previous week's tracks to avoid duplicates
+    previous_tracks = []
+    if week_number > 1:
+        try:
+            conn = sqlite3.connect('mario_kart_times.db')
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT track1, track2, track3 
+                FROM weekly_trials 
+                WHERE week_number = ?
+            ''', (week_number - 1,))
+            prev_result = cursor.fetchone()
+            if prev_result:
+                previous_tracks = [track for track in prev_result if track]
+            conn.close()
+        except Exception as e:
+            print(f"Warning: Could not fetch previous week's tracks: {e}")
+    
+    max_attempts = 50  # Prevent infinite loops
+    attempts = 0
+    
+    while attempts < max_attempts:
         selected_tracks = []
-        selected_tracks.append(random.choice(tour_tracks))
-        selected_tracks.extend(random.sample(non_tour_tracks, 2))
-    else:
-        # All regular tracks
-        selected_tracks = random.sample(non_tour_tracks, 3)
+        
+        # Every other week (odd week numbers) should include a tour track
+        if week_number % 2 == 1:
+            # Include 1 tour track and 2 regular tracks
+            available_tour = [t for t in tour_tracks if t not in previous_tracks]
+            available_non_tour = [t for t in non_tour_tracks if t not in previous_tracks]
+            
+            # If we filtered out too many tracks, fall back to full lists
+            if len(available_tour) == 0:
+                available_tour = tour_tracks
+            if len(available_non_tour) < 2:
+                available_non_tour = non_tour_tracks
+            
+            selected_tracks.append(random.choice(available_tour))
+            selected_tracks.extend(random.sample(available_non_tour, min(2, len(available_non_tour))))
+        else:
+            # All regular tracks
+            available_non_tour = [t for t in non_tour_tracks if t not in previous_tracks]
+            
+            # If we filtered out too many tracks, fall back to full list
+            if len(available_non_tour) < 3:
+                available_non_tour = non_tour_tracks
+            
+            selected_tracks = random.sample(available_non_tour, min(3, len(available_non_tour)))
+        
+        # Check if we have any duplicates with previous week
+        if not any(track in previous_tracks for track in selected_tracks):
+            break
+        
+        attempts += 1
+        # Re-seed with a slight variation to get different random results
+        random.seed(week_number + attempts)
     
     # Reset random seed to avoid affecting other random operations
     random.seed()
@@ -664,11 +710,19 @@ async def compare_wr_itemless(interaction: discord.Interaction):
     conn = sqlite3.connect('mario_kart_times.db')
     cursor = conn.cursor()
 
-    # Get all user's times for shroomless 150cc
+    # Get user's personal best times for shroomless 150cc (only best time per track)
     cursor.execute('''
         SELECT track_name, time_minutes, time_seconds, time_milliseconds
         FROM time_trials
         WHERE user_id = ? AND game_mode = ? AND items_setting = ?
+        AND (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) IN (
+            SELECT MIN(time_minutes * 60000 + time_seconds * 1000 + time_milliseconds)
+            FROM time_trials t2
+            WHERE t2.user_id = time_trials.user_id 
+            AND t2.track_name = time_trials.track_name 
+            AND t2.game_mode = time_trials.game_mode 
+            AND t2.items_setting = time_trials.items_setting
+        )
     ''', (interaction.user.id, mode, items))
     user_times = cursor.fetchall()
     conn.close()
@@ -808,7 +862,7 @@ async def add_time(
             active_tracks = [current_trial[2], current_trial[3], current_trial[4]]
             
             if track in active_tracks:
-                # Check current weekly best for this user/track
+                # Check current weekly best for this user/track (only best time during trial period)
                 cursor.execute('''
                     SELECT time_minutes, time_seconds, time_milliseconds 
                     FROM weekly_submissions 
@@ -1404,11 +1458,19 @@ async def compare_wr_shrooms(interaction: discord.Interaction, cc: str = "150cc"
     conn = sqlite3.connect('mario_kart_times.db')
     cursor = conn.cursor()
 
-    # Get all user's times for shrooms and selected cc
+    # Get user's personal best times for shrooms and selected cc (only best time per track)
     cursor.execute('''
         SELECT track_name, time_minutes, time_seconds, time_milliseconds
         FROM time_trials
         WHERE user_id = ? AND game_mode = ? AND items_setting = ?
+        AND (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) IN (
+            SELECT MIN(time_minutes * 60000 + time_seconds * 1000 + time_milliseconds)
+            FROM time_trials t2
+            WHERE t2.user_id = time_trials.user_id 
+            AND t2.track_name = time_trials.track_name 
+            AND t2.game_mode = time_trials.game_mode 
+            AND t2.items_setting = time_trials.items_setting
+        )
     ''', (interaction.user.id, mode, items))
     user_times = cursor.fetchall()
     conn.close()
