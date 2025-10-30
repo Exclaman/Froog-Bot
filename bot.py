@@ -489,14 +489,21 @@ async def generate_weekly_leaderboard(week_number, tracks):
     )
     
     for i, track in enumerate(tracks, 1):
-        # Get top 5 times for this track
+        # Get top 5 USERS with their best times for this track (no duplicate users)
         cursor.execute('''
-            SELECT user_id, time_minutes, time_seconds, time_milliseconds, vehicle_setup
-            FROM weekly_submissions
-            WHERE week_number = ? AND track_name = ?
-            ORDER BY (time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) ASC
+            SELECT ws.user_id, ws.time_minutes, ws.time_seconds, ws.time_milliseconds, ws.vehicle_setup
+            FROM weekly_submissions ws
+            INNER JOIN (
+                SELECT user_id, MIN(time_minutes * 60000 + time_seconds * 1000 + time_milliseconds) as best_time_ms
+                FROM weekly_submissions
+                WHERE week_number = ? AND track_name = ?
+                GROUP BY user_id
+            ) best ON ws.user_id = best.user_id 
+                AND (ws.time_minutes * 60000 + ws.time_seconds * 1000 + ws.time_milliseconds) = best.best_time_ms
+            WHERE ws.week_number = ? AND ws.track_name = ?
+            ORDER BY (ws.time_minutes * 60000 + ws.time_seconds * 1000 + ws.time_milliseconds) ASC
             LIMIT 5
-        ''', (week_number, track))
+        ''', (week_number, track, week_number, track))
         
         results = cursor.fetchall()
         
