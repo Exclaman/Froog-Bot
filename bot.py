@@ -23,6 +23,10 @@ def get_non_tour_tracks():
 
 def select_weekly_tracks(week_number):
     """Select 3 tracks for the week. Every other week includes 1 tour track."""
+    # Handle week 0 (before trials start)
+    if week_number <= 0:
+        return []
+    
     # Use week number as seed to ensure consistent selection across all servers
     random.seed(week_number)
     
@@ -91,17 +95,20 @@ def select_weekly_tracks(week_number):
     return selected_tracks
 
 def get_current_week():
-    """Get current week number since October 14, 2025"""
+    """Get current week number since November 4, 2025 (Week 1 starts Monday Nov 4)"""
     today = datetime.date.today()
     # Get Monday of current week
     monday = today - datetime.timedelta(days=today.weekday())
-    # Calculate week number since October 14, 2025
-    start_date = datetime.date(2025, 10, 14)  # Start counting from today
-    # Find the Monday of the week containing October 14, 2025
-    start_monday = start_date - datetime.timedelta(days=start_date.weekday())
+    # Calculate week number since November 4, 2025 (Monday)
+    start_date = datetime.date(2025, 11, 4)  # Week 1 starts Monday November 4, 2025
+    # start_date is already a Monday, so no adjustment needed
     
-    week_number = (monday - start_monday).days // 7 + 1
-    return max(1, week_number)  # Ensure we never return 0 or negative
+    # If we're before the start date, return 0 (no active trials yet)
+    if monday < start_date:
+        return 0
+    
+    week_number = (monday - start_date).days // 7 + 1
+    return week_number
 
 async def track_autocomplete(interaction, current: str):
     return [discord.app_commands.Choice(name=track, value=track) for track in MK8_TRACKS if current.lower() in track.lower()][:25]
@@ -553,6 +560,12 @@ async def end_weekly_trials():
 async def setup_new_weekly_trials(target_guild=None):
     """Set up new weekly trials"""
     week_number = get_current_week()
+    
+    # If week is 0, trials haven't started yet
+    if week_number == 0:
+        print("📅 Weekly trials haven't started yet (starts Monday November 4, 2025)")
+        return
+    
     tracks = select_weekly_tracks(week_number)
     
     conn = sqlite3.connect('mario_kart_times.db')
@@ -1661,6 +1674,18 @@ async def current_trials(interaction: discord.Interaction):
         await interaction.response.send_message(
             "❌ This command can only be used in the #time-trials-of-the-week channel.",
             ephemeral=True
+        )
+        return
+    
+    # Check if trials have started yet
+    current_week = get_current_week()
+    if current_week == 0:
+        await interaction.response.send_message(
+            "🏁 **Weekly Time Trials**\n\n"
+            "Trials haven't started yet!\n"
+            "**Week 1 begins:** Monday, November 4, 2025\n\n"
+            "Get ready to race! 🏎️",
+            ephemeral=False
         )
         return
     
