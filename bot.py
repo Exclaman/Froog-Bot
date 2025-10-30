@@ -235,6 +235,89 @@ async def award_streak_role(member, guild, current_streak):
     
     return None  # Already has the role
 
+async def track_record_change(user_id, guild_id, track, mode, items, mins, secs, ms, vehicle=None, notes=None):
+    """Track when someone gets or loses a record"""
+    conn = sqlite3.connect('mario_kart_times.db')
+    cursor = conn.cursor()
+    
+    # Check current record holder
+    cursor.execute('''
+        SELECT user_id FROM record_holders 
+        WHERE track_name = ? AND game_mode = ? AND items_setting = ? AND guild_id = ? AND is_current = 1
+    ''', (track, mode, items, guild_id))
+    
+    current_holder = cursor.fetchone()
+    current_time = datetime.datetime.now().isoformat()
+    
+    if current_holder and current_holder[0] != user_id:
+        # Someone else held the record, mark it as lost
+        cursor.execute('''
+            UPDATE record_holders 
+            SET is_current = 0, date_lost = ?, days_held = CAST((julianday(?) - julianday(date_achieved)) AS INTEGER)
+            WHERE track_name = ? AND game_mode = ? AND items_setting = ? AND guild_id = ? AND is_current = 1
+        ''', (current_time, current_time, track, mode, items, guild_id))
+    
+    # Add new record
+    cursor.execute('''
+        INSERT INTO record_holders 
+        (user_id, guild_id, track_name, game_mode, items_setting, time_minutes, time_seconds, time_milliseconds, 
+         date_achieved, vehicle_setup, notes, is_current)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+    ''', (user_id, guild_id, track, mode, items, mins, secs, ms, current_time, vehicle or "", notes or ""))
+    
+    conn.commit()
+    conn.close()
+
+async def check_milestones(user_id, guild_id):
+    """Check and award milestones for user achievements"""
+    conn = sqlite3.connect('mario_kart_times.db')
+    cursor = conn.cursor()
+    
+    # Count total submissions
+    cursor.execute('SELECT COUNT(*) FROM time_trials WHERE user_id = ?', (user_id,))
+    total_submissions = cursor.fetchone()[0]
+    
+    # Count unique tracks
+    cursor.execute('SELECT COUNT(DISTINCT track_name) FROM time_trials WHERE user_id = ?', (user_id,))
+    unique_tracks = cursor.fetchone()[0]
+    
+    # Check for milestones
+    milestones_to_check = [
+        (10, "10_submissions", f"First 10 Time Trials"),
+        (50, "50_submissions", f"50 Time Trials Milestone"),
+        (100, "100_submissions", f"Century Club - 100 Submissions"),
+        (500, "500_submissions", f"Speed Demon - 500 Submissions"),
+        (10, "10_tracks", f"Track Explorer - 10 Different Tracks"),
+        (25, "25_tracks", f"Track Veteran - 25 Different Tracks"),
+        (50, "50_tracks", f"Track Master - 50 Different Tracks"),
+        (96, "all_tracks", f"Track Completionist - All 96 Tracks!")
+    ]
+    
+    new_milestones = []
+    for threshold, milestone_type, milestone_name in milestones_to_check:
+        # Check if milestone already achieved
+        cursor.execute('''
+            SELECT id FROM user_milestones 
+            WHERE user_id = ? AND guild_id = ? AND milestone_type = ?
+        ''', (user_id, guild_id, milestone_type))
+        
+        if not cursor.fetchone():
+            # Check if threshold is met
+            if ("submissions" in milestone_type and total_submissions >= threshold) or \
+               ("tracks" in milestone_type and unique_tracks >= threshold):
+                
+                # Award milestone
+                cursor.execute('''
+                    INSERT INTO user_milestones (user_id, guild_id, milestone_type, milestone_name, milestone_data)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (user_id, guild_id, milestone_type, milestone_name, f"Achieved with {total_submissions} submissions on {unique_tracks} tracks"))
+                
+                new_milestones.append(milestone_name)
+    
+    conn.commit()
+    conn.close()
+    return new_milestones
+
 def time_to_total_ms(mins, secs, ms):
     return mins * 60000 + secs * 1000 + ms
 
@@ -302,6 +385,53 @@ def init_database():
             total_weeks_participated INTEGER DEFAULT 0,
             date_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(user_id, guild_id)
+        )
+    ''')
+    
+    # Hall of Fame tables for MVP tracking and legacy records
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS monthly_mvps (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            guild_id INTEGER,
+            month TEXT,
+            year INTEGER,
+            category TEXT,
+            achievement_description TEXT,
+            stats_snapshot TEXT,
+            date_awarded TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS record_holders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            guild_id INTEGER,
+            track_name TEXT,
+            game_mode TEXT,
+            items_setting TEXT,
+            time_minutes INTEGER,
+            time_seconds INTEGER,
+            time_milliseconds INTEGER,
+            date_achieved TIMESTAMP,
+            date_lost TIMESTAMP,
+            days_held INTEGER,
+            is_current BOOLEAN DEFAULT 1,
+            vehicle_setup TEXT,
+            notes TEXT
+        )
+    ''')
+    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_milestones (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            guild_id INTEGER,
+            milestone_type TEXT,
+            milestone_name TEXT,
+            date_achieved TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            milestone_data TEXT
         )
     ''')
     
@@ -837,6 +967,19 @@ async def add_time(
         embed.add_field(name="📅 Weekly Trials", value=weekly_best_info, inline=False)
         if weekly_best_info.startswith("🎉 New Weekly Best!"):
             embed.color = 0xffd700
+    
+    # Check for server record and track it
+    if top_time and top_time[0] == interaction.user.id:
+        # User has the best time, track this record
+        await track_record_change(interaction.user.id, interaction.guild.id, track, mode, items, 
+                                 minutes, seconds, milliseconds, vehicle, notes)
+    
+    # Check for milestones
+    new_milestones = await check_milestones(interaction.user.id, interaction.guild.id)
+    if new_milestones:
+        milestone_text = "\n".join([f"🎖️ {milestone}" for milestone in new_milestones])
+        embed.add_field(name="🏆 New Achievements Unlocked!", value=milestone_text, inline=False)
+        embed.color = 0xffd700
     
     if ping_message:
         try:
@@ -1984,6 +2127,343 @@ async def streak_roles(interaction: discord.Interaction):
     )
     
     await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="hall_of_fame", description="View the server's Hall of Fame and record holders")
+async def hall_of_fame(interaction: discord.Interaction):
+    await interaction.response.defer()
+    
+    try:
+        conn = sqlite3.connect('mario_kart_times.db')
+        cursor = conn.cursor()
+        
+        embed = discord.Embed(
+            title="🏛️ Hall of Fame",
+            description=f"**{interaction.guild.name}** - Legends and Champions",
+            color=0xffd700
+        )
+        
+        # Current record holders (top 5 by days held)
+        cursor.execute('''
+            SELECT user_id, track_name, time_minutes, time_seconds, time_milliseconds, 
+                   CAST((julianday('now') - julianday(date_achieved)) AS INTEGER) as days_held,
+                   date_achieved
+            FROM record_holders 
+            WHERE guild_id = ? AND is_current = 1
+            ORDER BY days_held DESC
+            LIMIT 5
+        ''', (interaction.guild.id,))
+        
+        current_records = cursor.fetchall()
+        
+        if current_records:
+            record_lines = []
+            for user_id, track, mins, secs, ms, days_held, date_achieved in current_records:
+                try:
+                    user = await bot.fetch_user(user_id)
+                    formatted_time = format_time(mins, secs, ms)
+                    track_display = truncate_text(track, 20)
+                    record_lines.append(f"**{user.display_name}** - {track_display}\n{formatted_time} • {days_held} days")
+                except:
+                    record_lines.append(f"User {user_id} - {truncate_text(track, 20)}\n{format_time(mins, secs, ms)} • {days_held} days")
+            
+            embed.add_field(
+                name="👑 Current Record Holders",
+                value="\n\n".join(record_lines[:3]),  # Limit to prevent overflow
+                inline=False
+            )
+        
+        # Longest-held records (all time)
+        cursor.execute('''
+            SELECT user_id, track_name, time_minutes, time_seconds, time_milliseconds, days_held
+            FROM record_holders 
+            WHERE guild_id = ? AND days_held IS NOT NULL
+            ORDER BY days_held DESC
+            LIMIT 3
+        ''', (interaction.guild.id,))
+        
+        longest_records = cursor.fetchall()
+        
+        if longest_records:
+            legend_lines = []
+            for user_id, track, mins, secs, ms, days_held in longest_records:
+                try:
+                    user = await bot.fetch_user(user_id)
+                    formatted_time = format_time(mins, secs, ms)
+                    track_display = truncate_text(track, 20)
+                    legend_lines.append(f"**{user.display_name}** - {track_display}\n{formatted_time} • {days_held} days")
+                except:
+                    legend_lines.append(f"User {user_id} - {truncate_text(track, 20)}\n{format_time(mins, secs, ms)} • {days_held} days")
+            
+            embed.add_field(
+                name="📜 Legendary Records",
+                value="\n\n".join(legend_lines),
+                inline=False
+            )
+        
+        # Recent MVPs
+        cursor.execute('''
+            SELECT user_id, category, achievement_description, month, year
+            FROM monthly_mvps 
+            WHERE guild_id = ?
+            ORDER BY year DESC, month DESC
+            LIMIT 3
+        ''', (interaction.guild.id,))
+        
+        recent_mvps = cursor.fetchall()
+        
+        if recent_mvps:
+            mvp_lines = []
+            for user_id, category, achievement, month, year in recent_mvps:
+                try:
+                    user = await bot.fetch_user(user_id)
+                    mvp_lines.append(f"**{user.display_name}** - {category}\n{achievement} ({month} {year})")
+                except:
+                    mvp_lines.append(f"User {user_id} - {category}\n{achievement} ({month} {year})")
+            
+            embed.add_field(
+                name="🌟 Recent MVPs",
+                value="\n\n".join(mvp_lines),
+                inline=False
+            )
+        
+        embed.set_footer(text="Use /my_achievements to see your personal milestones!")
+        conn.close()
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        print(f"❌ Hall of Fame error: {e}")
+        await interaction.followup.send(f"❌ Error loading Hall of Fame: {str(e)[:200]}")
+
+@bot.tree.command(name="my_achievements", description="View your personal achievements and milestones")
+async def my_achievements(interaction: discord.Interaction):
+    await interaction.response.defer()
+    
+    try:
+        conn = sqlite3.connect('mario_kart_times.db')
+        cursor = conn.cursor()
+        
+        embed = discord.Embed(
+            title="🏆 Your Achievements",
+            description=f"**{interaction.user.display_name}**'s Mario Kart Legacy",
+            color=0x9b59b6
+        )
+        
+        # Current records held
+        cursor.execute('''
+            SELECT track_name, time_minutes, time_seconds, time_milliseconds, 
+                   CAST((julianday('now') - julianday(date_achieved)) AS INTEGER) as days_held,
+                   date_achieved
+            FROM record_holders 
+            WHERE user_id = ? AND guild_id = ? AND is_current = 1
+            ORDER BY days_held DESC
+        ''', (interaction.user.id, interaction.guild.id))
+        
+        current_records = cursor.fetchall()
+        
+        if current_records:
+            record_lines = []
+            for track, mins, secs, ms, days_held, date_achieved in current_records[:5]:
+                formatted_time = format_time(mins, secs, ms)
+                track_display = truncate_text(track, 25)
+                record_lines.append(f"**{track_display}** - {formatted_time} ({days_held} days)")
+            
+            embed.add_field(
+                name="👑 Current Records",
+                value="\n".join(record_lines),
+                inline=False
+            )
+        
+        # Total records ever held
+        cursor.execute('''
+            SELECT COUNT(*), SUM(COALESCE(days_held, CAST((julianday('now') - julianday(date_achieved)) AS INTEGER)))
+            FROM record_holders 
+            WHERE user_id = ? AND guild_id = ?
+        ''', (interaction.user.id, interaction.guild.id))
+        
+        total_records, total_days = cursor.fetchone()
+        
+        # Personal milestones
+        cursor.execute('''
+            SELECT milestone_name, date_achieved
+            FROM user_milestones 
+            WHERE user_id = ? AND guild_id = ?
+            ORDER BY date_achieved DESC
+        ''', (interaction.user.id, interaction.guild.id))
+        
+        milestones = cursor.fetchall()
+        
+        if milestones:
+            milestone_lines = []
+            for milestone_name, date_achieved in milestones[:8]:
+                date_str = date_achieved.split()[0] if date_achieved else "Unknown"
+                milestone_lines.append(f"🎖️ {milestone_name} ({date_str})")
+            
+            embed.add_field(
+                name="🏅 Milestones Achieved",
+                value="\n".join(milestone_lines),
+                inline=False
+            )
+        
+        # MVP awards
+        cursor.execute('''
+            SELECT category, achievement_description, month, year
+            FROM monthly_mvps 
+            WHERE user_id = ? AND guild_id = ?
+            ORDER BY year DESC, month DESC
+        ''', (interaction.user.id, interaction.guild.id))
+        
+        mvp_awards = cursor.fetchall()
+        
+        if mvp_awards:
+            mvp_lines = []
+            for category, achievement, month, year in mvp_awards[:3]:
+                mvp_lines.append(f"🌟 **{category}** - {month} {year}\n{achievement}")
+            
+            embed.add_field(
+                name="🏆 MVP Awards",
+                value="\n\n".join(mvp_lines),
+                inline=False
+            )
+        
+        # Stats summary
+        stats_text = f"**Records Held:** {total_records or 0} (Total: {total_days or 0} days)\n"
+        stats_text += f"**Current Records:** {len(current_records)}\n"
+        stats_text += f"**Milestones:** {len(milestones)}\n"
+        stats_text += f"**MVP Awards:** {len(mvp_awards)}"
+        
+        embed.add_field(
+            name="📊 Legacy Summary",
+            value=stats_text,
+            inline=True
+        )
+        
+        # Calculate anniversary (days since first submission)
+        cursor.execute('''
+            SELECT MIN(date_recorded) 
+            FROM time_trials 
+            WHERE user_id = ?
+        ''', (interaction.user.id,))
+        
+        first_submission = cursor.fetchone()[0]
+        if first_submission:
+            first_date = datetime.datetime.fromisoformat(first_submission)
+            days_active = (datetime.datetime.now() - first_date).days
+            
+            if days_active >= 365:
+                years = days_active // 365
+                embed.add_field(
+                    name="🎂 Anniversary",
+                    value=f"**{years} year{'s' if years > 1 else ''}** of racing!\n({days_active} days total)",
+                    inline=True
+                )
+            elif days_active >= 30:
+                months = days_active // 30
+                embed.add_field(
+                    name="📅 Active For",
+                    value=f"**{months} month{'s' if months > 1 else ''}**\n({days_active} days)",
+                    inline=True
+                )
+        
+        embed.set_thumbnail(url=interaction.user.display_avatar.url)
+        conn.close()
+        
+        await interaction.followup.send(embed=embed)
+        
+    except Exception as e:
+        print(f"❌ Achievements error: {e}")
+        await interaction.followup.send(f"❌ Error loading achievements: {str(e)[:200]}")
+
+@bot.tree.command(name="award_mvp", description="Award monthly MVP to a user (Admin only)")
+@discord.app_commands.describe(
+    user="User to award MVP to",
+    category="MVP category (Most Improved, Most Active, etc.)",
+    achievement="Description of their achievement"
+)
+async def award_mvp(interaction: discord.Interaction, user: discord.User, category: str, achievement: str):
+    # Check admin permissions
+    try:
+        member = interaction.guild.get_member(interaction.user.id)
+        if member is None:
+            member = await interaction.guild.fetch_member(interaction.user.id)
+        
+        user_roles = [role.name.lower() for role in member.roles]
+        is_admin = (any(role in user_roles for role in ['captain', 'coach']) or 
+                   member.guild_permissions.administrator)
+        
+        if not is_admin:
+            await interaction.response.send_message(
+                "❌ This command requires captain/coach role or administrator permissions.", 
+                ephemeral=True
+            )
+            return
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Error checking permissions: {e}", ephemeral=True)
+        return
+
+    # Get current month/year
+    now = datetime.datetime.now()
+    month = now.strftime("%B")
+    year = now.year
+    
+    conn = sqlite3.connect('mario_kart_times.db')
+    cursor = conn.cursor()
+    
+    # Check if user already has MVP for this month/category
+    cursor.execute('''
+        SELECT id FROM monthly_mvps 
+        WHERE user_id = ? AND guild_id = ? AND month = ? AND year = ? AND category = ?
+    ''', (user.id, interaction.guild.id, month, year, category))
+    
+    if cursor.fetchone():
+        await interaction.response.send_message(
+            f"❌ {user.display_name} already has the **{category}** MVP award for {month} {year}.", 
+            ephemeral=True
+        )
+        conn.close()
+        return
+    
+    # Get user stats for snapshot
+    cursor.execute('SELECT COUNT(*) FROM time_trials WHERE user_id = ?', (user.id,))
+    total_submissions = cursor.fetchone()[0]
+    
+    cursor.execute('SELECT COUNT(DISTINCT track_name) FROM time_trials WHERE user_id = ?', (user.id,))
+    unique_tracks = cursor.fetchone()[0]
+    
+    stats_snapshot = f"Total submissions: {total_submissions}, Unique tracks: {unique_tracks}"
+    
+    # Award MVP
+    cursor.execute('''
+        INSERT INTO monthly_mvps (user_id, guild_id, month, year, category, achievement_description, stats_snapshot)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (user.id, interaction.guild.id, month, year, category, achievement, stats_snapshot))
+    
+    conn.commit()
+    conn.close()
+    
+    # Create celebration embed
+    embed = discord.Embed(
+        title="🏆 MVP Award Ceremony!",
+        description=f"**{user.display_name}** has been awarded **{category}** MVP for {month} {year}!",
+        color=0xffd700
+    )
+    
+    embed.add_field(
+        name="🌟 Achievement",
+        value=achievement,
+        inline=False
+    )
+    
+    embed.add_field(
+        name="📊 Stats Snapshot",
+        value=stats_snapshot,
+        inline=False
+    )
+    
+    embed.set_thumbnail(url=user.display_avatar.url)
+    embed.set_footer(text=f"Awarded by {interaction.user.display_name}")
+    
+    await interaction.response.send_message(f"🎉 Congratulations {user.mention}!", embed=embed)
 
 # Main block
 if __name__ == "__main__":
